@@ -1,0 +1,322 @@
+{
+  "order_1769931825_7684": {
+    "user_id": 8033943956,
+    "card_id": "card_1769928349",
+    "price": 249,
+    "status": "rejected",
+    "created_at": "2026-02-01T10:43:45.166037",
+    "confirmed_at": "2026-02-02T08:13:44.597391",
+    "admin_id": 8033943956,
+    "payment_proof": null
+  },
+  "order_1769931834_4463": {
+    "user_id": 8033943956,
+    "card_id": "card_1769928324",
+    "price": 199,
+    "status": "confirmed",
+    "created_at": "2026-02-01T10:43:54.809831",
+    "confirmed_at": "2026-02-01T10:44:30.478446",
+    "admin_id": 8033943956,
+    "payment_proof": "AgACAgIAAxkBAAIE82l_BF34L28KaVUJRo4h7cpq8T4qAAL9DGsbK5r4Swal_aDfOo20AQADAgADeAADOAQ"
+  },
+  "order_1769932064_1308": {
+    "user_id": 7727571734,
+    "card_id": "card_1769928301",
+    "price": 99,
+    "status": "confirmed",
+    "created_at": "2026-02-01T10:47:44.603043",
+    "confirmed_at": "2026-02-01T10:48:01.323679",
+    "admin_id": 8033943956,
+    "payment_proof": "AgACAgIAAxkBAAIFAml_BS8tjG1hMsxEO06IzGgjCw-QAAL7C2sbu4r5S9tLUrms1MQDAQADAgADbQADOAQ"
+  },
+  "order_1769932679_3271": {
+    "user_id": 7727571734,
+    "card_id": "card_1769928301",
+    "price": 99,
+    "status": "confirmed",
+    "created_at": "2026-02-01T10:57:59.502176",
+    "confirmed_at": "2026-02-01T10:58:16.214032",
+    "admin_id": 8033943956,
+    "payment_proof": "AgACAgIAAxkBAAIFI2l_B5dOV8g_O1OuUCLSpUhoBVTSAAInDGsbu4r5S4BFPY-WccD9AQADAgADeAADOAQ"
+  },
+  "order_1769932752_1365": {
+    "user_id": 7727571734,
+    "card_id": "card_1769928349",
+    "price": 249,
+    "status": "confirmed",
+    "created_at": "2026-02-01T10:59:12.818540",
+    "confirmed_at": "2026-02-01T10:59:29.783299",
+    "admin_id": 8033943956,
+    "payment_proof": "AgACAgIAAxkBAAIFNGl_B9_CTf2ClUlhfOkpuDB7c3JnAAIpDGsbu4r5S_MC7Mt6ySQuAQADAgADeAADOAQ"
+  },
+  "order_1769935680_5911": {
+    "user_id": 8033943956,
+    "card_id": "card_1769928324",
+    "price": 199,
+    "status": "confirmed",
+    "created_at": "2026-02-01T11:48:00.288031",
+    "confirmed_at": "2026-02-01T11:48:13.718065",
+    "admin_id": 8033943956,
+    "payment_proof": "AgACAgIAAxkBAAIFS2l_E0_0DLCiNMCQqCpqSfNOHJzoAAJbDWsbK5r4S296awsPFJfoAQADAgADeAADOAQ"
+  },
+  "order_1769966081_6488": {
+    "user_id": 1024710611,
+    "card_id": "card_1769928324",
+    "price": 199,
+    "status": "rejected",
+    "created_at": "2026-02-01T20:14:41.282744",
+    "confirmed_at": "2026-02-02T08:19:29.693906",
+    "admin_id": 8033943956,
+    "payment_proof": null
+  },
+  "order_1770003703_5189": {
+    "user_id": 8033943956,
+    "card_id": "card_1769966225",
+    "price": 99,
+    "status": "rejected",
+    "created_at": "2026-02-02T06:41:43.050240",
+    "confirmed_at": "2026-02-02T08:19:33.096137",
+    "admin_id": 8033943956,
+    "payment_proof": null
+  },
+  "order_1770009106_3502": {
+    "user_id": 8033943956,
+    "card_id": "card_1769971905",
+    "price": 99,
+    "status": "rejected",
+    "created_at": "2026-02-02T08:11:46.241653",
+    "confirmed_at": "2026-02-02T08:19:35.724209",
+    "admin_id": 8033943956,
+    "payment_proof": null
+  },
+  "order_1770009262_2469": {
+    "user_id": 1571242007,
+    "card_id": "card_1769966325",
+    "price": 249,
+    "status": "rejected",
+    "created_at": "2026-02-02T08:14:22.152470",
+    "confirmed_at": "2026-02-02T08:19:39.039610",
+    "admin_id": 8033943956,
+    "payment_proof": null
+  },
+  "order_1770009584_5611": {
+    "user_id": 8033943956,
+    "card_id": "card_1769928301",
+    "price": 99,
+    "status": "rejected",
+    "created_at": "2026-02-02T08:19:44.740277",
+    "confirmed_at": "2026-02-02T08:21:39.367547",
+    "admin_id": 8033943956,
+    "payment_proof": null
+  },
+  "order_1770009666_6312": {
+    "user_id": 8033943956,
+    "card_id": "card_1769966881",
+    "price": 249,
+    "status": "rejected",
+    "created_at": "2026-02-02T08:21:06.120594",
+    "confirmed_at": "2026-02-02T08:21:41.778263",
+    "admin_id": 8033943956,
+    "payment_proof": null
+  },
+  "order_1770009677_5314": {
+    "user_id": 7571242177,
+    "card_id": "card_1769966225",
+    "price": 99,
+    "status": "rejected",
+    "created_at": "2026-02-02T08:21:17.378353",
+    "confirmed_at": "2026-02-02T08:21:44.441135",
+    "admin_id": 8033943956,
+    "payment_proof": null
+  },
+  "order_1770017400_6616": {
+    "user_id": 7727571734,
+    "card_id": "card_1769928324",
+    "price": 199,
+    "status": "pending",
+    "created_at": "2026-02-02T10:30:00.529428",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "order_1770017427_1402": {
+    "user_id": 7727571734,
+    "card_id": "card_1769966303",
+    "price": 199,
+    "status": "pending",
+    "created_at": "2026-02-02T10:30:27.669311",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "order_1770017435_1615": {
+    "user_id": 7727571734,
+    "card_id": "card_1769966821",
+    "price": 99,
+    "status": "pending",
+    "created_at": "2026-02-02T10:30:35.097354",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "order_1770017644_2584": {
+    "user_id": 7571242177,
+    "card_id": "card_1769928301",
+    "price": 99,
+    "status": "pending",
+    "created_at": "2026-02-02T10:34:04.551428",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "reduced_trade_cd_1770061883_5914": {
+    "user_id": 8033943956,
+    "card_id": "reduced_trade_cd_30_days",
+    "price": 150,
+    "status": "pending",
+    "created_at": "2026-02-02T22:51:23.180114",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "reduced_trade_cd_1770061894_6766": {
+    "user_id": 8033943956,
+    "card_id": "reduced_trade_cd_30_days",
+    "price": 150,
+    "status": "pending",
+    "created_at": "2026-02-02T22:51:34.552652",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "reduced_cd_1770061903_3981": {
+    "user_id": 8033943956,
+    "card_id": "reduced_cd_30_days",
+    "price": 400,
+    "status": "pending",
+    "created_at": "2026-02-02T22:51:43.123533",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "order_1770061919_1617": {
+    "user_id": 8033943956,
+    "card_id": "card_1769928349",
+    "price": 249,
+    "status": "pending",
+    "created_at": "2026-02-02T22:51:59.874946",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "order_1770061985_7001": {
+    "user_id": 7685079861,
+    "card_id": "card_1769971921",
+    "price": 199,
+    "status": "pending",
+    "created_at": "2026-02-02T22:53:05.248591",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "premium_1770062230_9437": {
+    "user_id": 8033943956,
+    "card_id": "premium_30_days",
+    "price": 299,
+    "status": "pending",
+    "created_at": "2026-02-02T22:57:10.067685",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "order_1770072273_9135": {
+    "user_id": 8033943956,
+    "card_id": "card_1769971905",
+    "price": 99,
+    "status": "confirmed",
+    "created_at": "2026-02-03T01:44:33.368716",
+    "confirmed_at": "2026-02-03T01:45:35.483355",
+    "admin_id": 8033943956,
+    "payment_proof": "AgACAgIAAxkBAAIIOWmBKQZ-PmHujpm9LKRcIKNLwMXLAAIED2sbl14ISEKy3TgU5VnvAQADAgADeAADOAQ"
+  },
+  "exclusive_1770172138_4744": {
+    "user_id": 8033943956,
+    "card_id": "card_1770172021",
+    "price": 299,
+    "status": "pending",
+    "created_at": "2026-02-04T05:28:58.179050",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "reduced_cd_1770172166_2598": {
+    "user_id": 8033943956,
+    "card_id": "reduced_cd_30_days",
+    "price": 400,
+    "status": "pending",
+    "created_at": "2026-02-04T05:29:26.779302",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "reduced_trade_cd_1770172167_8663": {
+    "user_id": 8033943956,
+    "card_id": "reduced_trade_cd_30_days",
+    "price": 150,
+    "status": "pending",
+    "created_at": "2026-02-04T05:29:27.898736",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "order_1770172177_3905": {
+    "user_id": 8033943956,
+    "card_id": "card_1769928301",
+    "price": 99,
+    "status": "pending",
+    "created_at": "2026-02-04T05:29:37.688997",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "exclusive_1770172180_1982": {
+    "user_id": 8033943956,
+    "card_id": "card_1770172021",
+    "price": 299,
+    "status": "pending",
+    "created_at": "2026-02-04T05:29:40.729380",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "exclusive_1770176224_3813": {
+    "user_id": 7727571734,
+    "card_id": "card_1770172021",
+    "price": 299,
+    "status": "pending",
+    "created_at": "2026-02-04T06:37:04.596934",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "exclusive_1770176326_4028": {
+    "user_id": 7727571734,
+    "card_id": "card_1770173357",
+    "price": 389,
+    "status": "pending",
+    "created_at": "2026-02-04T06:38:46.831338",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  },
+  "exclusive_1770282638_8946": {
+    "user_id": 8033943956,
+    "card_id": "card_1770173357",
+    "price": 389,
+    "status": "pending",
+    "created_at": "2026-02-05T12:10:38.129923",
+    "confirmed_at": null,
+    "admin_id": null,
+    "payment_proof": null
+  }
+}

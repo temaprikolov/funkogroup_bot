@@ -1,0 +1,23 @@
+{
+  "card_1770172021": {
+    "total_copies": 60,
+    "sold_copies": 0,
+    "price": 299,
+    "end_date": "2026-02-24T05:28:36.564820",
+    "is_active": true
+  },
+  "card_1770172651": {
+    "total_copies": 90,
+    "sold_copies": 0,
+    "price": 339,
+    "end_date": "2026-03-07T05:38:39.715597",
+    "is_active": true
+  },
+  "card_1770173357": {
+    "total_copies": 75,
+    "sold_copies": 0,
+    "price": 389,
+    "end_date": "2026-02-15T05:49:49.292506",
+    "is_active": true
+  }
+}

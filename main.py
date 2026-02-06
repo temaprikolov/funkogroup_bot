@@ -59,7 +59,9 @@ LEVEL_SETTINGS = {
         'open_card': 10,
         'purchase_card': 50,
         'trade_complete': 20,
-        'daily_login': 5
+        'daily_login': 5,
+        'referral': 50,
+        'welcome_bonus': 100
     }
 }
 
@@ -117,6 +119,9 @@ class User:
         self.total_exp_earned = 0
         self.secret_total_spent = 0
         self.last_daily_exp = None
+        self.referrals = []  
+        self.referrer_id = None  
+        self.referral_bonus_claimed = False 
 
 class Card:
     def __init__(self, card_id: str, name: str, rarity: str, image_filename: str = ""):
@@ -470,6 +475,13 @@ def load_data():
                     user.banned_until = user_data.get('banned_until')
                     user.is_frozen = user_data.get('is_frozen', False)
                     user.frozen_until = user_data.get('frozen_until')
+                    user.level = user_data.get('level', 1)
+                    user.experience = user_data.get('experience', 0)
+                    user.total_exp_earned = user_data.get('total_exp_earned', 0)
+                    user.secret_total_spent = user_data.get('secret_total_spent', 0)
+                    user.referrals = user_data.get('referrals', [])
+                    user.referrer_id = user_data.get('referrer_id')
+                    user.referral_bonus_claimed = user_data.get('referral_bonus_claimed', False)
                     users[user_id] = user
         
         if CARDS_FILE.exists():
@@ -586,7 +598,14 @@ def save_data():
             'ban_reason': user.ban_reason,
             'banned_until': user.banned_until,
             'is_frozen': user.is_frozen,
-            'frozen_until': user.frozen_until
+            'frozen_until': user.frozen_until,
+            'level': user.level,
+            'experience': user.experience,
+            'total_exp_earned': user.total_exp_earned,
+            'secret_total_spent': user.secret_total_spent,
+            'referrals': user.referrals,
+            'referrer_id': user.referrer_id,
+            'referral_bonus_claimed': user.referral_bonus_claimed
         }
     
     with open(USERS_FILE, 'w', encoding='utf-8') as f:
@@ -661,23 +680,110 @@ def save_data():
         with open(POPULARITY_FILE, 'w', encoding='utf-8') as f:
             json.dump(card_popularity, f, ensure_ascii=False, indent=2)
         
-        logger.debug("✅ Новые данные сохранены")
+        logger.info(f"✅ Новые данные сохранены")
         
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения новых данных: {e}")
     
-    logger.debug("✅ Данные сохранены")
+    logger.info(f"✅ Данные сохранены: {len(users)} пользователей, {len(cards)} карточек, {len(orders)} заказов")
 
 def update_user_interaction(user: User):
-    user.last_interaction = datetime.now().isoformat()
     user.last_seen = datetime.now().isoformat()
-    save_data()
+    user.last_interaction = datetime.now().isoformat()
 
-def get_or_create_user(user_id: int, username: str = "", first_name: str = "") -> User:
+def get_user_by_username(username: str) -> Optional[User]:
+    if not username:
+        return None
+    
+    username = username.lstrip('@').lower()
+    for user in users.values():
+        if user.username.lower() == username:
+            return user
+    return None
+
+async def send_referral_bonus(user_id: int, referral_count: int, card_id: str):
+    """Отправляет уведомление о бонусе за приглашение"""
+    try:
+        user = users.get(user_id)
+        if not user:
+            return
+        
+        card = cards.get(card_id)
+        card_name = card.name if card else "редкая карточка"
+        
+        await bot.send_message(
+            user_id,
+            f"🎉 <b>Поздравляем! Вы пригласили {referral_count} друзей!</b>\n\n"
+            f"🎁 <b>Ваш бонус:</b> {card_name}\n"
+            f"👥 <b>Всего приглашено:</b> {referral_count} человек\n"
+            f"✨ <b>Получено опыта:</b> {referral_count * 50} XP\n\n"
+            f"Продолжайте приглашать друзей - за каждых 3 приглашенных вы получаете карточку!\n\n"
+            f"📢 Ваша ссылка для приглашений:\n"
+            f"<code>https://t.me/{(await bot.get_me()).username}?start=ref_{user_id}</code>"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка отправки уведомления о бонусе: {e}")
+
+async def send_new_referral_notification(user_id: int, new_referral_id: int):
+    """Уведомляет пользователя о новом реферале"""
+    try:
+        user = users.get(user_id)
+        new_user = users.get(new_referral_id)
+        
+        if not user or not new_user:
+            return
+        
+        total_referrals = len(user.referrals)
+        next_bonus_at = 3 - (total_referrals % 3) if total_referrals % 3 != 0 else 3
+        
+        await bot.send_message(
+            user_id,
+            f"🎉 <b>Новый друг присоединился по вашей ссылке!</b>\n\n"
+            f"👤 <b>Новый игрок:</b> @{new_user.username or 'без username'}\n"
+            f"✨ <b>Вы получили:</b> +50 XP\n"
+            f"👥 <b>Всего приглашено:</b> {total_referrals} человек\n"
+            f"🎯 <b>До следующей карточки:</b> {next_bonus_at} приглашенных\n\n"
+            f"Продолжайте приглашать друзей - каждый новый игрок приближает вас к следующей награде!"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка отправки уведомления о новом реферале: {e}")
+
+def get_or_create_user(user_id: int, username: str = "", first_name: str = "", referrer_id: int = None) -> User:
     if user_id not in users:
         users[user_id] = User(user_id, username, first_name)
+        
+        # Реферальная система: если есть referrer_id и это существующий пользователь
+        if referrer_id and referrer_id in users and referrer_id != user_id:
+            users[referrer_id].referrals.append(user_id)
+            users[user_id].referrer_id = referrer_id
+            
+            # Дарим опыт тому, кто пригласил
+            add_experience(users[referrer_id], 'referral', 50)
+            
+            # Дарим опыт новичку
+            add_experience(users[user_id], 'welcome_bonus', 100)
+
+            asyncio.create_task(send_new_referral_notification(referrer_id, user_id))
+            
+            # За каждых 3 приглашенных - карточка в подарок
+            referral_count = len(users[referrer_id].referrals)
+            if referral_count % 3 == 0:  # Каждые 3 приглашенных
+                if referral_count <= 30:  # Максимум 10 карточек (30/3)
+                    card_id = random.choice(card_pool)
+                    users[referrer_id].cards[card_id] = users[referrer_id].cards.get(card_id, 0) + 1
+                    
+                    # Уведомляем о бонусе
+                    try:
+                        asyncio.create_task(send_referral_bonus(referrer_id, referral_count, card_id))
+                    except:
+                        pass
+            
+            save_data()
+            logger.info(f"🎁 Новый пользователь {user_id} приглашен пользователем {referrer_id}")
+        
         save_data()
         logger.info(f"✅ Создан новый пользователь: {user_id}")
+    
     elif (username and users[user_id].username != username) or (first_name and users[user_id].first_name != first_name):
         if username:
             users[user_id].username = username
@@ -688,13 +794,6 @@ def get_or_create_user(user_id: int, username: str = "", first_name: str = "") -
     update_user_interaction(users[user_id])
     
     return users[user_id]
-
-def get_user_by_username(username: str) -> Optional[User]:
-    username = username.lstrip('@').lower()
-    for user in users.values():
-        if user.username.lower() == username:
-            return user
-    return None
 
 def add_reduced_cd(user: User, days: int = 30):
     user.has_reduced_cd = True
@@ -1247,17 +1346,35 @@ class OrderStates(StatesGroup):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    """Обработчик команды /start"""
     user_id = message.from_user.id
     
+    # Извлекаем referrer_id из параметров команды
+    referrer_id = None
+    if len(message.text.split()) > 1:
+        args = message.text.split()[1]
+        if args.startswith('ref_'):
+            try:
+                referrer_id = int(args.replace('ref_', ''))
+                # Проверяем, что это не сам пользователь и не фейковый ID
+                if referrer_id == user_id or referrer_id < 1000:
+                    referrer_id = None
+            except:
+                referrer_id = None
+    
+    # Создаем/получаем пользователя с учетом реферала
     user = get_or_create_user(
         message.from_user.id, 
         message.from_user.username,
-        message.from_user.first_name
+        message.from_user.first_name,
+        referrer_id  # Передаем referrer_id если есть
     )
     
+    # Проверяем доступ
     if not await check_access_before_handle(message, user_id):
         return
     
+    # Проверяем подписку
     is_subscribed = await check_subscription(user_id)
     
     if not is_subscribed:
@@ -1273,11 +1390,24 @@ async def cmd_start(message: types.Message):
         )
         return
     
+    # Добавляем информацию о рефералах если есть
+    if user.referrer_id:
+        referrer = users.get(user.referrer_id)
+        if referrer:
+            await message.answer(
+                f"👋 <b>Добро пожаловать!</b>\n\n"
+                f"Вас пригласил: @{referrer.username or 'друг'}\n"
+                f"🎁 Вы получили: <b>100 XP бонус</b> за регистрацию по приглашению!\n\n"
+                f"Теперь вы тоже можете приглашать друзей и получать бонусы!\n\n"
+                f"💡 Используйте команду /invite чтобы получить свою ссылку"
+            )
+    
     if user.is_premium:
         claimed = claim_daily_bonus(user)
         if claimed:
             await message.answer("🎁 <b>Получен ежедневный бонус: 3 карточки!</b>")
     
+    # Проверяем истекшие кулдауны
     if user.has_reduced_cd and user.reduced_cd_until:
         until_date = datetime.fromisoformat(user.reduced_cd_until)
         if until_date <= datetime.now():
@@ -1303,6 +1433,8 @@ async def cmd_start(message: types.Message):
         "• 🔄 Обмен - обмен карточками с другими\n"
         "• 🛒 Магазин - покупка редких карточек\n"
         "• 💝 Поддержать проект - помочь развитию бота\n\n"
+        "🎁 <b>Новое: Реферальная система!</b>\n"
+        "Приглашайте друзей командой /invite и получайте бонусы!\n\n"
         "Используйте кнопки меню ниже:",
         reply_markup=get_main_menu()
     )
@@ -1328,7 +1460,99 @@ async def help_command(message: types.Message):
         "/admin - Админ-панель (только для админов)\n\n"
         "<i>Используйте кнопки меню для навигации</i>"
     )
+
+@dp.message(Command("invite"))
+async def invite_command(message: types.Message):
+    """Команда для приглашения друзей"""
+    if not await check_access_before_handle(message, message.from_user.id):
+        return
     
+    user = get_or_create_user(message.from_user.id)
+    
+    # Получаем username бота
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
+    
+    # Создаем реферальную ссылку
+    invite_link = f"https://t.me/{bot_username}?start=ref_{user.user_id}"
+    
+    # Создаем красивую клавиатуру
+    keyboard = InlineKeyboardBuilder()
+    keyboard.add(InlineKeyboardButton(
+        text="📢 Поделиться ссылкой", 
+        url=f"https://t.me/share/url?url={invite_link}&text=🎴 Присоединяйся к игре Funko Cards! Собирай карточки, обменивайся с друзьями и получай редкие экземпляры!"
+    ))
+    keyboard.add(InlineKeyboardButton(
+        text="👥 Мои рефералы", 
+        callback_data="my_referrals"
+    ))
+    keyboard.adjust(1)
+    
+    # Статистика рефералов
+    total_referrals = len(user.referrals)
+    cards_earned = total_referrals // 3
+    next_bonus_at = 3 - (total_referrals % 3) if total_referrals % 3 != 0 else 3
+    
+    await message.answer(
+        f"🎁 <b>Приглашай друзей и получай бонусы!</b>\n\n"
+        f"📊 <b>Твоя статистика:</b>\n"
+        f"👥 Приглашено друзей: <b>{total_referrals}</b>\n"
+        f"🎴 Получено карточек: <b>{cards_earned}</b>\n"
+        f"✨ Всего заработано XP: <b>{total_referrals * 50}</b>\n\n"
+        f"🎯 <b>До следующей карточки:</b> {next_bonus_at} приглашенных\n\n"
+        f"📢 <b>Твоя ссылка для приглашения:</b>\n"
+        f"<code>{invite_link}</code>\n\n"
+        f"💡 <b>Как приглашать:</b>\n"
+        f"1. Отправь другу ссылку выше\n"
+        f"2. Друг нажимает на ссылку\n"
+        f"3. Друг получает +100 XP сразу\n"
+        f"4. Ты получаешь +50 XP\n"
+        f"5. Каждые 3 друга - карточка в подарок!\n\n"
+        f"🔥 <b>Бонус за 10 друзей:</b> ЛЕГЕНДАРНАЯ карточка!",
+        reply_markup=keyboard.as_markup(),
+        disable_web_page_preview=True
+    )
+
+@dp.callback_query(lambda c: c.data == "my_referrals")
+async def my_referrals_handler(callback: types.CallbackQuery):
+    """Показывает список приглашенных друзей"""
+    user = get_or_create_user(callback.from_user.id)
+    
+    if not user.referrals:
+        await callback.answer("У вас пока нет приглашенных друзей", show_alert=True)
+        return
+    
+    response = "👥 <b>Ваши приглашенные друзья:</b>\n\n"
+    
+    # Показываем последних 20 рефералов
+    for i, ref_id in enumerate(user.referrals[-20:], 1):
+        ref_user = users.get(ref_id)
+        if ref_user:
+            # Проверяем активность реферала
+            last_seen = datetime.fromisoformat(ref_user.last_seen)
+            days_ago = (datetime.now() - last_seen).days
+            
+            status = "🟢" if days_ago < 1 else "🟡" if days_ago < 7 else "🔴"
+            username = f"@{ref_user.username}" if ref_user.username else f"Пользователь {ref_id}"
+            
+            response += f"{i}. {status} {username}\n"
+    
+    # Статистика
+    total = len(user.referrals)
+    active = len([r for r in user.referrals if users.get(r) and (datetime.now() - datetime.fromisoformat(users[r].last_seen)).days < 7])
+    cards_earned = total // 3
+    
+    response += f"\n📊 <b>Статистика:</b>\n"
+    response += f"• Всего приглашено: {total}\n"
+    response += f"• Активных: {active}\n"
+    response += f"• Карточек получено: {cards_earned}\n"
+    response += f"• XP заработано: {total * 50}\n\n"
+    
+    response += f"<i>Показано последние 20 из {total} рефералов</i>"
+    
+    await callback.message.answer(response)
+    await callback.answer()
+
 @dp.message(Command("myorders"))
 async def cmd_myorders(message: types.Message):
     if not await check_access_before_handle(message, message.from_user.id):
@@ -1592,7 +1816,7 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
                         f"👤 <b>Пользователь:</b> @{message.from_user.username or 'без username'}\n"
                         f"🎴 <b>Карточка:</b> {card_name}\n"
                         f"💰 <b>Сумма:</b> {order.price}₽\n\n"
-                        f"<i>Скриншот был отправлен, но не удалось переслать его. Проверьте заказ в админ1панели.</i>"
+                        f"<i>Скриншот был отправлен, но не удалось переслать его. Проверьте заказ в админ-панели.</i>"
                     )
                 )
             except Exception as e2:
@@ -1621,6 +1845,176 @@ async def process_text_during_payment(message: types.Message, state: FSMContext)
         "• Или напишите <b>отмена</b>\n\n"
         "<i>Пришлите фото скриншота оплаты...</i>"
     )
+
+    # =============== ОБРАБОТЧИКИ ОБМЕНА ===============
+@dp.callback_query(lambda c: c.data == "cancel_trade")
+async def cancel_trade_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Отмена создания обмена"""
+    await state.clear()
+    await callback.message.edit_text(
+        "❌ <b>Создание обмена отменено</b>\n\n"
+        "Вы можете начать заново, нажав кнопку '📝 Создать предложение'"
+    )
+    await callback.answer()
+
+@dp.message(TradeStates.selecting_partner)
+async def process_trade_partner(message: types.Message, state: FSMContext):
+    """Обработка username партнера для обмена"""
+    if not await check_access_before_handle(message, message.from_user.id):
+        await state.clear()
+        return
+    
+    username = message.text.strip().lstrip('@')
+    
+    # Если пользователь написал /refresh
+    if username.lower() == "/refresh":
+        await state.clear()
+        await message.answer("✅ <b>Действие отменено!</b>")
+        return
+    
+    # Находим пользователя по username
+    partner = get_user_by_username(username)
+    
+    if not partner:
+        await message.answer(
+            f"❌ <b>Пользователь @{username} не найден!</b>\n\n"
+            f"Проверьте правильность написания username и убедитесь, что пользователь зарегистрирован в боте.\n\n"
+            f"Попробуйте еще раз или напишите <b>/refresh</b> для отмены:"
+        )
+        return
+    
+    # Нельзя предлагать обмен самому себе
+    if partner.user_id == message.from_user.id:
+        await message.answer(
+            "❌ <b>Нельзя предлагать обмен самому себе!</b>\n\n"
+            "Введите username другого пользователя или напишите <b>/refresh</b> для отмены:"
+        )
+        return
+    
+    user = get_or_create_user(message.from_user.id)
+    
+    # Проверяем, есть ли у пользователя карточки для обмена
+    if not user.cards:
+        await message.answer(
+            "❌ <b>У вас нет карточек для обмена!</b>\n\n"
+            "Сначала получите карточки, написав <b>фанко</b> в групповом чате с ботом."
+        )
+        await state.clear()
+        return
+    
+    # Проверяем кулдаун обменов у отправителя
+    can_trade_now, remaining = can_trade(user)
+    if not can_trade_now:
+        await message.answer(
+            f"⏰ <b>Вы можете создать обмен через {remaining}</b>\n\n"
+            f"Кулдаун обменов: {get_trade_cooldown_hours(user)} часа"
+        )
+        await state.clear()
+        return
+    
+    # Проверяем кулдаун обменов у получателя
+    partner_can_trade, partner_remaining = can_trade(partner)
+    if not partner_can_trade:
+        await message.answer(
+            f"⏰ <b>Пользователь @{partner.username} не может принимать обмены!</b>\n\n"
+            f"Он сможет принимать обмены через {partner_remaining}\n"
+            f"Кулдаун обменов: {get_trade_cooldown_hours(partner)} часа"
+        )
+        await state.clear()
+        return
+    
+    # Сохраняем данные партнера
+    await state.update_data(
+        partner_id=partner.user_id,
+        partner_username=partner.username
+    )
+    
+    # Создаем клавиатуру с карточками пользователя
+    keyboard = InlineKeyboardBuilder()
+    
+    for card_id, quantity in user.cards.items():
+        if quantity > 0:  # Только карточки, которые есть в наличии
+            card = cards.get(card_id)
+            if card:
+                rarity_icon = get_rarity_color(card.rarity)
+                keyboard.add(InlineKeyboardButton(
+                    text=f"{rarity_icon} {card.name} (x{quantity})",
+                    callback_data=f"select_trade_card_{card_id}"
+                ))
+    
+    keyboard.add(InlineKeyboardButton(
+        text="❌ Отмена",
+        callback_data="cancel_trade"
+    ))
+    keyboard.adjust(1)
+    
+    await message.answer(
+        f"📝 <b>Создание обмена с @{partner.username}</b>\n\n"
+        f"Теперь выберите карточки, которые хотите предложить для обмена:\n\n"
+        f"<i>Выберите карточку из списка ниже</i>",
+        reply_markup=keyboard.as_markup()
+    )
+    
+    await state.set_state(TradeStates.selecting_my_cards)
+
+@dp.callback_query(lambda c: c.data.startswith("select_trade_card_"), TradeStates.selecting_my_cards)
+async def select_trade_card_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Обработчик выбора карточки для обмена"""
+    card_id = callback.data.replace("select_trade_card_", "")
+    
+    user = get_or_create_user(callback.from_user.id)
+    data = await state.get_data()
+    partner_id = data.get('partner_id')
+    
+    if not partner_id:
+        await callback.answer("❌ Ошибка: партнер не найден", show_alert=True)
+        await state.clear()
+        return
+    
+    # Проверяем, есть ли такая карточка у пользователя
+    if card_id not in user.cards or user.cards[card_id] <= 0:
+        await callback.answer("❌ У вас нет этой карточки!", show_alert=True)
+        return
+    
+    card = cards.get(card_id)
+    if not card:
+        await callback.answer("❌ Карточка не найдена", show_alert=True)
+        return
+    
+    # Создаем обмен
+    cards_to_give = [card_id]
+    trade_id = create_trade(callback.from_user.id, partner_id, cards_to_give)
+    
+    # Обновляем кулдаун обменов у отправителя
+    user.last_trade_time = datetime.now().isoformat()
+    update_user_interaction(user)
+    save_data()
+    
+    await callback.message.edit_text(
+        f"✅ <b>Предложение обмена создано!</b>\n\n"
+        f"🔄 <b>Обмен #{trade_id.split('_')[1]}</b>\n"
+        f"👤 <b>Для:</b> @{data.get('partner_username', 'пользователь')}\n"
+        f"🎴 <b>Вы предлагаете:</b> {card.name}\n"
+        f"📅 <b>Создан:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"<i>Ожидайте подтверждения от пользователя</i>"
+    )
+    
+    # Уведомляем получателя
+    partner = get_or_create_user(partner_id)
+    try:
+        await bot.send_message(
+            partner_id,
+            f"📥 <b>Новое предложение обмена!</b>\n\n"
+            f"🔄 <b>Обмен #{trade_id.split('_')[1]}</b>\n"
+            f"👤 <b>От:</b> @{user.username or 'пользователь'}\n"
+            f"🎴 <b>Предлагает:</b> {card.name}\n\n"
+            f"Для просмотра перейдите в раздел 🔄 Обмен → 📥 Входящие предложения"
+        )
+    except:
+        pass
+    
+    await state.clear()
+    await callback.answer(f"Вы выбрали: {card.name}")
     
 @dp.callback_query(lambda c: c.data == "check_subscription")
 async def process_check_subscription(callback: types.CallbackQuery):
@@ -2824,9 +3218,8 @@ async def help_menu(message: types.Message):
         "📞 <b>Поддержка:</b>\n"
         "• Связь с автором: @prikolovwork\n"
         "• Канал: @funkopopcards\n"
-        "• Пожертвования: https://tbank.ru/cf/17LdZPej2CV"
-        
-         "<i>Используйте кнопки меню для навигации</i>"
+        "• Пожертвования: https://tbank.ru/cf/17LdZPej2CV\n\n"
+        "<i>Используйте кнопки меню для навигации</i>"
     )
 
 @dp.message(F.text == "💰 Топ покупателей")
@@ -3071,6 +3464,72 @@ async def top_total_cards_handler(callback: types.CallbackQuery):
     
     await callback.message.answer(response)
     await callback.answer()
+
+@dp.message(Command("topreferrals"))
+async def top_referrals_command(message: types.Message):
+    """Топ пользователей по приглашениям"""
+    if not await check_access_before_handle(message, message.from_user.id):
+        return
+    
+    # Сортируем пользователей по количеству рефералов
+    users_with_referrals = []
+    for user in users.values():
+        if user.referrals:
+            # Считаем только активных рефералов (были онлайн за последнюю неделю)
+            active_referrals = 0
+            for ref_id in user.referrals:
+                ref_user = users.get(ref_id)
+                if ref_user:
+                    last_seen = datetime.fromisoformat(ref_user.last_seen)
+                    if (datetime.now() - last_seen).days < 7:
+                        active_referrals += 1
+            
+            users_with_referrals.append({
+                'user': user,
+                'total': len(user.referrals),
+                'active': active_referrals,
+                'cards': len(user.referrals) // 3
+            })
+    
+    if not users_with_referrals:
+        await message.answer("📊 <b>Топ по приглашениям</b>\n\nПока никто не пригласил друзей.")
+        return
+    
+    # Сортируем по количеству рефералов
+    users_with_referrals.sort(key=lambda x: x['total'], reverse=True)
+    
+    response = "🏆 <b>ТОП ПРИГЛАШАЛОВ</b>\n\n"
+    
+    for i, data in enumerate(users_with_referrals[:10], 1):
+        user = data['user']
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+        
+        response += f"{medal} <b>@{user.username or 'без username'}</b>\n"
+        response += f"   👥 Приглашено: {data['total']} (🟢 {data['active']} активных)\n"
+        response += f"   🎴 Карточек получено: {data['cards']}\n"
+        response += f"   ⭐ Уровень: {user.level}\n\n"
+    
+    # Показываем позицию текущего пользователя
+    current_user = get_or_create_user(message.from_user.id)
+    current_position = None
+    
+    for idx, data in enumerate(users_with_referrals, 1):
+        if data['user'].user_id == current_user.user_id:
+            current_position = idx
+            break
+    
+    if current_position:
+        response += f"👤 <b>Ваша позиция:</b> {current_position}\n"
+        response += f"👥 Ваших рефералов: {len(current_user.referrals)}\n"
+        
+        if current_position > 1 and len(users_with_referrals) >= current_position - 1:
+            next_up = users_with_referrals[current_position - 2]
+            needed = next_up['total'] - len(current_user.referrals) + 1
+            response += f"📈 До {current_position-1} места: {needed} приглашений\n"
+    
+    response += f"\n📢 <b>Как приглашать:</b>\nИспользуйте команду /invite чтобы получить свою ссылку!"
+    
+    await message.answer(response)
 
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message):
@@ -3348,7 +3807,7 @@ async def complete_card_add(source, state: FSMContext, data: dict, image_filenam
         await source.answer(
             f"✅ <b>Карточка добавлена успешно!</b>\n\n"
             f"🎴 Название: <b>{card_name}</b>\n"
-            f"📊 Редкость: <b>{get_rarity_name(card_rarity)}</b>\n"
+            f"📊 Редкость: <b>{get_rarity_name(card.rarity)}</b>\n"
             f"🆔 ID: <code>{card_id}</code>\n"
             f"🖼️ Изображение: {'✅ Есть' if image_filename else '❌ Нет'}\n\n"
             f"Всего карточек в системе: {len(cards)}"
@@ -3832,6 +4291,229 @@ async def view_order_handler(callback: types.CallbackQuery):
     
     await callback.message.answer(response, reply_markup=keyboard.as_markup())
     await callback.answer()
+
+# ================== ОБРАБОТЧИКИ ОБМЕНА ==================
+
+@dp.callback_query(lambda c: c.data == "cancel_trade")
+async def cancel_trade_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Отмена создания обмена"""
+    await state.clear()
+    await callback.message.edit_text(
+        "❌ <b>Создание обмена отменено</b>\n\n"
+        "Вы можете начать заново, нажав кнопку '📝 Создать предложение'"
+    )
+    await callback.answer()
+
+@dp.message(TradeStates.selecting_partner)
+async def process_trade_partner(message: types.Message, state: FSMContext):
+    """Обработка username партнера для обмена"""
+    username = message.text.strip().lstrip('@')
+    
+    # Если пользователь написал /refresh
+    if username.lower() in ["/refresh", "отмена", "cancel", "stop", "стоп"]:
+        await state.clear()
+        await message.answer("✅ <b>Действие отменено!</b>")
+        return
+    
+    # Находим пользователя по username
+    partner = get_user_by_username(username)
+    
+    if not partner:
+        await message.answer(f"❌ <b>Пользователь @{username} не найден!</b>")
+        await state.clear()
+        return
+    
+    # Нельзя предлагать обмен самому себе
+    if partner.user_id == message.from_user.id:
+        await message.answer("❌ <b>Нельзя предлагать обмен самому себе!</b>")
+        await state.clear()
+        return
+    
+    user = get_or_create_user(message.from_user.id)
+    
+    # Проверяем, есть ли у пользователя карточки для обмена
+    if not user.cards:
+        await message.answer("❌ <b>У вас нет карточек для обмена!</b>")
+        await state.clear()
+        return
+    
+    # Сохраняем данные партнера
+    await state.update_data(partner_id=partner.user_id, partner_username=partner.username)
+    
+    # Создаем клавиатуру с карточками пользователя
+    keyboard = InlineKeyboardBuilder()
+    cards_data = []  # Будем хранить данные о карточках для этого пользователя
+    
+    for card_id, quantity in user.cards.items():
+        if quantity > 0:  # Только карточки, которые есть в наличии
+            card = cards.get(card_id)
+            if card:
+                rarity_icon = get_rarity_color(card.rarity)
+                rarity_name = get_rarity_name(card.rarity)
+                
+                # Добавляем в клавиатуру
+                keyboard.add(InlineKeyboardButton(
+                    text=f"{rarity_icon} {card.name} ({rarity_name}) x{quantity}",
+                    callback_data=f"select_trade_card_{card_id}"
+                ))
+                cards_data.append({
+                    'card_id': card_id,
+                    'card': card,
+                    'quantity': quantity
+                })
+    
+    if not cards_data:
+        await message.answer("❌ <b>У вас нет доступных карточек для обмена!</b>")
+        await state.clear()
+        return
+    
+    keyboard.add(InlineKeyboardButton(
+        text="❌ Отмена",
+        callback_data="cancel_trade"
+    ))
+    keyboard.adjust(1)
+    
+    # Показываем первую карточку как пример
+    first_card = cards_data[0]['card']
+    first_card_rarity = get_rarity_name(first_card.rarity)
+    first_card_icon = get_rarity_color(first_card.rarity)
+    
+    response = (
+        f"📝 <b>Создание обмена с @{partner.username}</b>\n\n"
+        f"Теперь выберите карточку, которую хотите предложить для обмена:\n\n"
+        f"<b>Ваши карточки:</b> {len(cards_data)} уникальных\n\n"
+        f"<i>Пример карточки:</i>\n"
+        f"{first_card_icon} <b>{first_card.name}</b>\n"
+        f"📊 Редкость: {first_card_rarity}\n\n"
+        f"<b>Выберите карточку из списка ниже:</b>"
+    )
+    
+    # Если у карточки есть изображение, отправляем его
+    image_path = get_image_path(first_card)
+    if image_path and os.path.exists(image_path):
+        try:
+            await message.answer_photo(
+                photo=FSInputFile(image_path),
+                caption=response,
+                reply_markup=keyboard.as_markup()
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки фото: {e}")
+            await message.answer(response, reply_markup=keyboard.as_markup())
+    else:
+        await message.answer(response, reply_markup=keyboard.as_markup())
+    
+    await state.update_data(cards_data=cards_data)
+    await state.set_state(TradeStates.selecting_my_cards)
+
+@dp.callback_query(lambda c: c.data.startswith("select_trade_card_"), TradeStates.selecting_my_cards)
+async def select_trade_card_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Обработчик выбора карточки для обмена"""
+    card_id = callback.data.replace("select_trade_card_", "")
+    
+    user = get_or_create_user(callback.from_user.id)
+    data = await state.get_data()
+    partner_id = data.get('partner_id')
+    partner_username = data.get('partner_username')
+    
+    if not partner_id:
+        await callback.answer("❌ Ошибка: партнер не найден", show_alert=True)
+        await state.clear()
+        return
+    
+    # Проверяем, есть ли такая карточка у пользователя
+    if card_id not in user.cards or user.cards[card_id] <= 0:
+        await callback.answer("❌ У вас нет этой карточки!", show_alert=True)
+        return
+    
+    card = cards.get(card_id)
+    if not card:
+        await callback.answer("❌ Карточка не найдена", show_alert=True)
+        return
+    
+    # Проверяем кулдаун обменов
+    can_trade_now, remaining = can_trade(user)
+    if not can_trade_now:
+        await callback.answer(f"⏰ Вы можете создать обмен через {remaining}", show_alert=True)
+        return
+    
+    # Проверяем кулдаун у партнера
+    partner = get_or_create_user(partner_id)
+    partner_can_trade, partner_remaining = can_trade(partner)
+    if not partner_can_trade:
+        await callback.answer(
+            f"⏰ Пользователь @{partner_username} не может принимать обмены через {partner_remaining}",
+            show_alert=True
+        )
+        return
+    
+    # Создаем обмен
+    cards_to_give = [card_id]
+    trade_id = create_trade(callback.from_user.id, partner_id, cards_to_give)
+    
+    # Обновляем кулдаун обменов у отправителя
+    user.last_trade_time = datetime.now().isoformat()
+    update_user_interaction(user)
+    save_data()
+    
+    # Добавляем опыт за обмен
+    add_experience(user, 'trade_complete')
+    
+    # Получаем данные о карточке
+    rarity_icon = get_rarity_color(card.rarity)
+    rarity_name = get_rarity_name(card.rarity)
+    
+    # Создаем сообщение о создании обмена
+    response = (
+        f"✅ <b>Предложение обмена создано!</b>\n\n"
+        f"🔄 <b>Обмен #{trade_id.split('_')[1]}</b>\n"
+        f"👤 <b>Для:</b> @{partner_username}\n"
+        f"🎴 <b>Вы предлагаете:</b>\n"
+        f"{rarity_icon} <b>{card.name}</b>\n"
+        f"📊 Редкость: {rarity_name}\n"
+        f"📅 <b>Создан:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"<i>Ожидайте подтверждения от пользователя</i>"
+    )
+    
+    # Если у карточки есть изображение, отправляем его
+    image_path = get_image_path(card)
+    if image_path and os.path.exists(image_path):
+        try:
+            await callback.message.answer_photo(
+                photo=FSInputFile(image_path),
+                caption=response
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки фото: {e}")
+            await callback.message.answer(response)
+    else:
+        await callback.message.answer(response)
+    
+    # Уведомляем получателя с изображением карточки
+    try:
+        partner_response = (
+            f"📥 <b>Новое предложение обмена!</b>\n\n"
+            f"🔄 <b>Обмен #{trade_id.split('_')[1]}</b>\n"
+            f"👤 <b>От:</b> @{user.username or 'пользователь'}\n"
+            f"🎴 <b>Предлагает:</b>\n"
+            f"{rarity_icon} <b>{card.name}</b>\n"
+            f"📊 Редкость: {rarity_name}\n\n"
+            f"Для принятия перейдите в 🔄 Обмен → 📥 Входящие предложения"
+        )
+        
+        if image_path and os.path.exists(image_path):
+            await bot.send_photo(
+                partner_id,
+                photo=FSInputFile(image_path),
+                caption=partner_response
+            )
+        else:
+            await bot.send_message(partner_id, partner_response)
+    except Exception as e:
+        logger.error(f"Ошибка отправки уведомления партнеру: {e}")
+    
+    await state.clear()
+    await callback.answer(f"Вы выбрали: {card.name}")
 
 @dp.callback_query(lambda c: c.data.startswith("show_proof_"))
 async def show_proof_handler(callback: types.CallbackQuery):
@@ -4503,7 +5185,7 @@ async def process_freeze_days(message: types.Message, state: FSMContext):
         if days == 0:
             duration_msg = "навсегда"
         else:
-            duration_msg = f"до {frozen_until.strftime('%d.%m.%Y %H:%М')}"
+            duration_msg = f"до {frozen_until.strftime('%d.%m.%Y %H:%M')}"
         
         await bot.send_message(
             user.user_id,
@@ -4789,3 +5471,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"❌ Непредвиденная ошибка: {e}")
         save_data()
+

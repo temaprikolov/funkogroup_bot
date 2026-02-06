@@ -1,0 +1,26 @@
+{
+  "trade_1770291803_7555": {
+    "id": "trade_1770291803_7555",
+    "from_user": 8033943956,
+    "to_user": 7571242177,
+    "cards": [
+      "card_1769928301"
+    ],
+    "status": "pending",
+    "created_at": "2026-02-05T14:43:23.448141",
+    "receiver_card": null,
+    "completed_at": null
+  },
+  "trade_1770292713_5831": {
+    "id": "trade_1770292713_5831",
+    "from_user": 7727571734,
+    "to_user": 7571242177,
+    "cards": [
+      "card_1769928301"
+    ],
+    "status": "pending",
+    "created_at": "2026-02-05T14:58:33.445235",
+    "receiver_card": null,
+    "completed_at": null
+  }
+}
