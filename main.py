@@ -17,6 +17,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
+
 BOT_TOKEN = "8280702499:AAEScyLnr4z5wW84vOElGrTBmDy3fgOFRck"
 ADMIN_IDS = [8033943956, 7571242177]
 PREMIUM_COST = 299
@@ -82,7 +83,10 @@ IMAGES_DIR = DATA_DIR / "images"
 DATA_DIR.mkdir(exist_ok=True)
 IMAGES_DIR.mkdir(exist_ok=True)
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(
+    token=config.config.BOT_TOKEN,
+    default=DefaultBotProperties (parse_mode=ParseMode.HTML)
+)
 
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
