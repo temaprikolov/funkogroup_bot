@@ -10,6 +10,7 @@ from pathlib import Path
 from collections import defaultdict
 
 from aiogram import Bot, Dispatcher, types, F
+from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
@@ -83,11 +84,7 @@ IMAGES_DIR = DATA_DIR / "images"
 DATA_DIR.mkdir(exist_ok=True)
 IMAGES_DIR.mkdir(exist_ok=True)
 
-bot = Bot(
-    token=config.config.BOT_TOKEN,
-    default=DefaultBotProperties (parse_mode=ParseMode.HTML)
-)
-
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
@@ -271,7 +268,7 @@ async def show_payment_methods(callback: types.CallbackQuery, product_type: str,
     keyboard.adjust(1)
     
     await callback.message.answer(
-        f"💵 <b>Выберите способ оплата</b>\n\n"
+        f"💵 <b>Выберите способ оплаты</b>\n\n"
         f"🎁 <b>Товар:</b> {description}\n"
         f"💰 <b>Сумма:</b> {price}₽\n\n"
         f"<b>Доступные способы оплаты:</b>\n"
@@ -1209,7 +1206,7 @@ def confirm_order(order_id: str, admin_id: int) -> bool:
     
     card = cards.get(order.card_id)
     if not card:
-        logger.error(f"Карточка {order.card_id} не найден")
+        logger.error(f"Карточка {order.card_id} не найдена")
         return False
     
     try:
@@ -1619,7 +1616,7 @@ async def cmd_refresh(message: types.Message, state: FSMContext):
     
     if not current_state:
         await message.answer(
-            "🔄 <b>Нет активных действий для отмена</b>\n\n"
+            "🔄 <b>Нет активных действий для отмены</b>\n\n"
             "Вы не находитесь в процессе выполнения какой-либо команды."
         )
         return
@@ -1827,7 +1824,7 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
     
     await state.clear()
 
-@dp.message(OrderStates.waiting_for_payment_proof, F.text)
+@dp.message(OrderStates.waiting_for_payment_proof)
 async def process_text_during_payment(message: types.Message, state: FSMContext):
     text = message.text.strip().lower()
     
@@ -1849,7 +1846,7 @@ async def process_text_during_payment(message: types.Message, state: FSMContext)
         "<i>Пришлите фото скриншота оплаты...</i>"
     )
 
-    # =============== ОБРАБОТЧИКИ ОБМЕНА ===============
+# =============== ОБРАБОТЧИКИ ОБМЕНА ===============
 @dp.callback_query(lambda c: c.data == "cancel_trade")
 async def cancel_trade_handler(callback: types.CallbackQuery, state: FSMContext):
     """Отмена создания обмена"""
@@ -1870,7 +1867,7 @@ async def process_trade_partner(message: types.Message, state: FSMContext):
     username = message.text.strip().lstrip('@')
     
     # Если пользователь написал /refresh
-    if username.lower() == "/refresh":
+    if username.lower() in ["/refresh", "отмена", "cancel", "stop", "стоп"]:
         await state.clear()
         await message.answer("✅ <b>Действие отменено!</b>")
         return
@@ -2480,7 +2477,7 @@ async def payment_method_handler(callback: types.CallbackQuery):
             f"3. В комментарии укажите: Заказ {order_id}\n"
             f"4. Заполните данные для оплаты\n"
             f"5. Подтвердите оплату\n\n"
-            f"📸 <b>После оплата:</b>\n"
+            f"📸 <b>После оплаты:</b>\n"
             f"1. Сделайте скриншот подтверждения оплаты\n"
             f"2. Используйте команду /payment\n"
             f"3. Введите номер заказа: <code>{order_id}</code>\n"
@@ -3779,6 +3776,7 @@ async def process_card_image_with_photo(message: types.Message, state: FSMContex
     except Exception as e:
         logger.error(f"Ошибка сохранения изображения: {e}")
         await message.answer("❌ Ошибка сохранения изображения. Карточка добавлена без изображения.")
+        data = await state.get_data()
         await complete_card_add(message, state, data, image_filename="")
 
 async def complete_card_add(source, state: FSMContext, data: dict, image_filename: str):
@@ -3810,7 +3808,7 @@ async def complete_card_add(source, state: FSMContext, data: dict, image_filenam
         await source.answer(
             f"✅ <b>Карточка добавлена успешно!</b>\n\n"
             f"🎴 Название: <b>{card_name}</b>\n"
-            f"📊 Редкость: <b>{get_rarity_name(card.rarity)}</b>\n"
+            f"📊 Редкость: <b>{get_rarity_name(card_rarity)}</b>\n"
             f"🆔 ID: <code>{card_id}</code>\n"
             f"🖼️ Изображение: {'✅ Есть' if image_filename else '❌ Нет'}\n\n"
             f"Всего карточек в системе: {len(cards)}"
@@ -4295,229 +4293,6 @@ async def view_order_handler(callback: types.CallbackQuery):
     await callback.message.answer(response, reply_markup=keyboard.as_markup())
     await callback.answer()
 
-# ================== ОБРАБОТЧИКИ ОБМЕНА ==================
-
-@dp.callback_query(lambda c: c.data == "cancel_trade")
-async def cancel_trade_handler(callback: types.CallbackQuery, state: FSMContext):
-    """Отмена создания обмена"""
-    await state.clear()
-    await callback.message.edit_text(
-        "❌ <b>Создание обмена отменено</b>\n\n"
-        "Вы можете начать заново, нажав кнопку '📝 Создать предложение'"
-    )
-    await callback.answer()
-
-@dp.message(TradeStates.selecting_partner)
-async def process_trade_partner(message: types.Message, state: FSMContext):
-    """Обработка username партнера для обмена"""
-    username = message.text.strip().lstrip('@')
-    
-    # Если пользователь написал /refresh
-    if username.lower() in ["/refresh", "отмена", "cancel", "stop", "стоп"]:
-        await state.clear()
-        await message.answer("✅ <b>Действие отменено!</b>")
-        return
-    
-    # Находим пользователя по username
-    partner = get_user_by_username(username)
-    
-    if not partner:
-        await message.answer(f"❌ <b>Пользователь @{username} не найден!</b>")
-        await state.clear()
-        return
-    
-    # Нельзя предлагать обмен самому себе
-    if partner.user_id == message.from_user.id:
-        await message.answer("❌ <b>Нельзя предлагать обмен самому себе!</b>")
-        await state.clear()
-        return
-    
-    user = get_or_create_user(message.from_user.id)
-    
-    # Проверяем, есть ли у пользователя карточки для обмена
-    if not user.cards:
-        await message.answer("❌ <b>У вас нет карточек для обмена!</b>")
-        await state.clear()
-        return
-    
-    # Сохраняем данные партнера
-    await state.update_data(partner_id=partner.user_id, partner_username=partner.username)
-    
-    # Создаем клавиатуру с карточками пользователя
-    keyboard = InlineKeyboardBuilder()
-    cards_data = []  # Будем хранить данные о карточках для этого пользователя
-    
-    for card_id, quantity in user.cards.items():
-        if quantity > 0:  # Только карточки, которые есть в наличии
-            card = cards.get(card_id)
-            if card:
-                rarity_icon = get_rarity_color(card.rarity)
-                rarity_name = get_rarity_name(card.rarity)
-                
-                # Добавляем в клавиатуру
-                keyboard.add(InlineKeyboardButton(
-                    text=f"{rarity_icon} {card.name} ({rarity_name}) x{quantity}",
-                    callback_data=f"select_trade_card_{card_id}"
-                ))
-                cards_data.append({
-                    'card_id': card_id,
-                    'card': card,
-                    'quantity': quantity
-                })
-    
-    if not cards_data:
-        await message.answer("❌ <b>У вас нет доступных карточек для обмена!</b>")
-        await state.clear()
-        return
-    
-    keyboard.add(InlineKeyboardButton(
-        text="❌ Отмена",
-        callback_data="cancel_trade"
-    ))
-    keyboard.adjust(1)
-    
-    # Показываем первую карточку как пример
-    first_card = cards_data[0]['card']
-    first_card_rarity = get_rarity_name(first_card.rarity)
-    first_card_icon = get_rarity_color(first_card.rarity)
-    
-    response = (
-        f"📝 <b>Создание обмена с @{partner.username}</b>\n\n"
-        f"Теперь выберите карточку, которую хотите предложить для обмена:\n\n"
-        f"<b>Ваши карточки:</b> {len(cards_data)} уникальных\n\n"
-        f"<i>Пример карточки:</i>\n"
-        f"{first_card_icon} <b>{first_card.name}</b>\n"
-        f"📊 Редкость: {first_card_rarity}\n\n"
-        f"<b>Выберите карточку из списка ниже:</b>"
-    )
-    
-    # Если у карточки есть изображение, отправляем его
-    image_path = get_image_path(first_card)
-    if image_path and os.path.exists(image_path):
-        try:
-            await message.answer_photo(
-                photo=FSInputFile(image_path),
-                caption=response,
-                reply_markup=keyboard.as_markup()
-            )
-        except Exception as e:
-            logger.error(f"Ошибка отправки фото: {e}")
-            await message.answer(response, reply_markup=keyboard.as_markup())
-    else:
-        await message.answer(response, reply_markup=keyboard.as_markup())
-    
-    await state.update_data(cards_data=cards_data)
-    await state.set_state(TradeStates.selecting_my_cards)
-
-@dp.callback_query(lambda c: c.data.startswith("select_trade_card_"), TradeStates.selecting_my_cards)
-async def select_trade_card_handler(callback: types.CallbackQuery, state: FSMContext):
-    """Обработчик выбора карточки для обмена"""
-    card_id = callback.data.replace("select_trade_card_", "")
-    
-    user = get_or_create_user(callback.from_user.id)
-    data = await state.get_data()
-    partner_id = data.get('partner_id')
-    partner_username = data.get('partner_username')
-    
-    if not partner_id:
-        await callback.answer("❌ Ошибка: партнер не найден", show_alert=True)
-        await state.clear()
-        return
-    
-    # Проверяем, есть ли такая карточка у пользователя
-    if card_id not in user.cards or user.cards[card_id] <= 0:
-        await callback.answer("❌ У вас нет этой карточки!", show_alert=True)
-        return
-    
-    card = cards.get(card_id)
-    if not card:
-        await callback.answer("❌ Карточка не найдена", show_alert=True)
-        return
-    
-    # Проверяем кулдаун обменов
-    can_trade_now, remaining = can_trade(user)
-    if not can_trade_now:
-        await callback.answer(f"⏰ Вы можете создать обмен через {remaining}", show_alert=True)
-        return
-    
-    # Проверяем кулдаун у партнера
-    partner = get_or_create_user(partner_id)
-    partner_can_trade, partner_remaining = can_trade(partner)
-    if not partner_can_trade:
-        await callback.answer(
-            f"⏰ Пользователь @{partner_username} не может принимать обмены через {partner_remaining}",
-            show_alert=True
-        )
-        return
-    
-    # Создаем обмен
-    cards_to_give = [card_id]
-    trade_id = create_trade(callback.from_user.id, partner_id, cards_to_give)
-    
-    # Обновляем кулдаун обменов у отправителя
-    user.last_trade_time = datetime.now().isoformat()
-    update_user_interaction(user)
-    save_data()
-    
-    # Добавляем опыт за обмен
-    add_experience(user, 'trade_complete')
-    
-    # Получаем данные о карточке
-    rarity_icon = get_rarity_color(card.rarity)
-    rarity_name = get_rarity_name(card.rarity)
-    
-    # Создаем сообщение о создании обмена
-    response = (
-        f"✅ <b>Предложение обмена создано!</b>\n\n"
-        f"🔄 <b>Обмен #{trade_id.split('_')[1]}</b>\n"
-        f"👤 <b>Для:</b> @{partner_username}\n"
-        f"🎴 <b>Вы предлагаете:</b>\n"
-        f"{rarity_icon} <b>{card.name}</b>\n"
-        f"📊 Редкость: {rarity_name}\n"
-        f"📅 <b>Создан:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-        f"<i>Ожидайте подтверждения от пользователя</i>"
-    )
-    
-    # Если у карточки есть изображение, отправляем его
-    image_path = get_image_path(card)
-    if image_path and os.path.exists(image_path):
-        try:
-            await callback.message.answer_photo(
-                photo=FSInputFile(image_path),
-                caption=response
-            )
-        except Exception as e:
-            logger.error(f"Ошибка отправки фото: {e}")
-            await callback.message.answer(response)
-    else:
-        await callback.message.answer(response)
-    
-    # Уведомляем получателя с изображением карточки
-    try:
-        partner_response = (
-            f"📥 <b>Новое предложение обмена!</b>\n\n"
-            f"🔄 <b>Обмен #{trade_id.split('_')[1]}</b>\n"
-            f"👤 <b>От:</b> @{user.username or 'пользователь'}\n"
-            f"🎴 <b>Предлагает:</b>\n"
-            f"{rarity_icon} <b>{card.name}</b>\n"
-            f"📊 Редкость: {rarity_name}\n\n"
-            f"Для принятия перейдите в 🔄 Обмен → 📥 Входящие предложения"
-        )
-        
-        if image_path and os.path.exists(image_path):
-            await bot.send_photo(
-                partner_id,
-                photo=FSInputFile(image_path),
-                caption=partner_response
-            )
-        else:
-            await bot.send_message(partner_id, partner_response)
-    except Exception as e:
-        logger.error(f"Ошибка отправки уведомления партнеру: {e}")
-    
-    await state.clear()
-    await callback.answer(f"Вы выбрали: {card.name}")
-
 @dp.callback_query(lambda c: c.data.startswith("show_proof_"))
 async def show_proof_handler(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
@@ -4649,8 +4424,7 @@ async def reject_order_handler(callback: types.CallbackQuery):
                          f"🎴 Карточка: <b>{card.name if card else 'неизвестно'}</b>\n"
                          f"💰 Сумма: {order.price}₽\n\n"
                          f"Причина: оплата не подтверждена администратором.\n\n"
-                         f"<i>Если вы считаете это ошибкой, свяжитесь с @prikolovwork</i>",
-                    parse_mode=ParseMode.HTML
+                         f"<i>Если вы считаете это ошибкой, свяжитесь с @prikolovwork</i>"
                 )
                 logger.info(f"Уведомление об отклонении отправлено пользователю {user.user_id}")
             except Exception as e:
@@ -5372,6 +5146,194 @@ async def add_exclusive_command(message: types.Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
+@dp.callback_query(lambda c: c.data.startswith("view_trade_"))
+async def view_trade_handler(callback: types.CallbackQuery):
+    """Просмотр конкретного обмена"""
+    trade_id = callback.data.replace("view_trade_", "")
+    
+    if trade_id not in trades:
+        await callback.answer("❌ Обмен не найден", show_alert=True)
+        return
+    
+    trade = trades[trade_id]
+    from_user = get_or_create_user(trade['from_user'])
+    to_user = get_or_create_user(trade['to_user'])
+    
+    response = f"🔄 <b>Предложение обмена #{trade_id.split('_')[1]}</b>\n\n"
+    response += f"👤 <b>От:</b> @{from_user.username or 'пользователь'}\n"
+    response += f"👤 <b>Кому:</b> @{to_user.username or 'пользователь'}\n"
+    response += f"📅 <b>Создан:</b> {datetime.fromisoformat(trade['created_at']).strftime('%d.%m.%Y %H:%M')}\n\n"
+    
+    response += "<b>Предлагаемые карточки:</b>\n"
+    for card_id in trade['cards']:
+        card = cards.get(card_id)
+        if card:
+            rarity_icon = get_rarity_color(card.rarity)
+            response += f"{rarity_icon} {card.name}\n"
+    
+    keyboard = InlineKeyboardBuilder()
+    if callback.from_user.id == to_user.user_id:
+        keyboard.add(InlineKeyboardButton(
+            text="✅ Принять обмен",
+            callback_data=f"accept_trade_{trade_id}"
+        ))
+        keyboard.add(InlineKeyboardButton(
+            text="❌ Отклонить",
+            callback_data=f"reject_trade_{trade_id}"
+        ))
+    keyboard.add(InlineKeyboardButton(
+        text="🔙 Назад",
+        callback_data="incoming_trades"
+    ))
+    keyboard.adjust(2)
+    
+    await callback.message.edit_text(response, reply_markup=keyboard.as_markup())
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("accept_trade_"))
+async def accept_trade_handler(callback: types.CallbackQuery):
+    """Принятие обмена"""
+    trade_id = callback.data.replace("accept_trade_", "")
+    
+    if trade_id not in trades:
+        await callback.answer("❌ Обмен не найден", show_alert=True)
+        return
+    
+    trade = trades[trade_id]
+    
+    # Проверяем, что пользователь является получателем
+    if callback.from_user.id != trade['to_user']:
+        await callback.answer("❌ Вы не можете принять этот обмен", show_alert=True)
+        return
+    
+    user = get_or_create_user(callback.from_user.id)
+    
+    # Проверяем кулдаун обменов
+    can_trade_now, remaining = can_trade(user)
+    if not can_trade_now:
+        await callback.answer(f"⏰ Вы можете принимать обмены через {remaining}", show_alert=True)
+        return
+    
+    # Проверяем, что у отправителя еще есть карточки
+    from_user = get_or_create_user(trade['from_user'])
+    for card_id in trade['cards']:
+        if from_user.cards.get(card_id, 0) <= 0:
+            await callback.answer("❌ У отправителя больше нет этих карточек", show_alert=True)
+            return
+    
+    # Выбираем карточку для обмена (пока простой вариант - первую карточку отправителя)
+    # В будущем можно добавить выбор карточки
+    user_cards = [card_id for card_id, quantity in user.cards.items() if quantity > 0]
+    if not user_cards:
+        await callback.answer("❌ У вас нет карточек для обмена", show_alert=True)
+        return
+    
+    # Выбираем случайную карточку у получателя
+    receiver_card = random.choice(user_cards)
+    
+    # Обновляем кулдаун у обоих пользователей
+    user.last_trade_time = datetime.now().isoformat()
+    from_user.last_trade_time = datetime.now().isoformat()
+    
+    # Обмениваем карточки
+    for card_id in trade['cards']:
+        # Уменьшаем у отправителя
+        if card_id in from_user.cards and from_user.cards[card_id] > 0:
+            from_user.cards[card_id] -= 1
+            if from_user.cards[card_id] == 0:
+                del from_user.cards[card_id]
+        
+        # Добавляем получателю
+        user.cards[card_id] = user.cards.get(card_id, 0) + 1
+    
+    # Уменьшаем у получателя выбранную карточку
+    if receiver_card in user.cards and user.cards[receiver_card] > 0:
+        user.cards[receiver_card] -= 1
+        if user.cards[receiver_card] == 0:
+            del user.cards[receiver_card]
+        
+        # Добавляем отправителю
+        from_user.cards[receiver_card] = from_user.cards.get(receiver_card, 0) + 1
+    
+    # Обновляем статус обмена
+    trade['status'] = 'completed'
+    trade['receiver_card'] = receiver_card
+    trade['completed_at'] = datetime.now().isoformat()
+    
+    # Добавляем опыт обоим пользователям
+    add_experience(user, 'trade_complete')
+    add_experience(from_user, 'trade_complete')
+    
+    save_data()
+    
+    # Уведомляем обоих пользователей
+    try:
+        await bot.send_message(
+            from_user.user_id,
+            f"✅ <b>Ваш обмен завершен!</b>\n\n"
+            f"🔄 Обмен #{trade_id.split('_')[1]}\n"
+            f"👤 С: @{user.username or 'пользователь'}\n"
+            f"🎴 Вы получили: {cards.get(receiver_card, 'неизвестная карточка').name}\n"
+            f"📅 Завершен: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+    except:
+        pass
+    
+    await callback.message.edit_text(
+        f"✅ <b>Обмен завершен успешно!</b>\n\n"
+        f"🔄 Обмен #{trade_id.split('_')[1]}\n"
+        f"👤 С: @{from_user.username or 'пользователь'}\n"
+        f"🎴 Вы получили: {len(trade['cards'])} карточек\n"
+        f"🎴 Вы отдали: {cards.get(receiver_card, 'неизвестная карточка').name}\n"
+        f"📅 Завершен: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+    )
+    
+    await callback.answer("✅ Обмен завершен!")
+
+@dp.callback_query(lambda c: c.data.startswith("reject_trade_"))
+async def reject_trade_handler(callback: types.CallbackQuery):
+    """Отклонение обмена"""
+    trade_id = callback.data.replace("reject_trade_", "")
+    
+    if trade_id not in trades:
+        await callback.answer("❌ Обмен не найден", show_alert=True)
+        return
+    
+    trade = trades[trade_id]
+    
+    # Проверяем, что пользователь является получателем
+    if callback.from_user.id != trade['to_user']:
+        await callback.answer("❌ Вы не можете отклонить этот обмен", show_alert=True)
+        return
+    
+    # Обновляем статус обмена
+    trade['status'] = 'rejected'
+    trade['completed_at'] = datetime.now().isoformat()
+    
+    # Уведомляем отправителя
+    from_user = get_or_create_user(trade['from_user'])
+    try:
+        await bot.send_message(
+            from_user.user_id,
+            f"❌ <b>Ваш обмен отклонен</b>\n\n"
+            f"🔄 Обмен #{trade_id.split('_')[1]}\n"
+            f"👤 Кому: @{callback.from_user.username or 'пользователь'}\n"
+            f"📅 Отклонен: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+            f"Карточки остались в вашем инвентаре."
+        )
+    except:
+        pass
+    
+    await callback.message.edit_text(
+        f"❌ <b>Обмен отклонен</b>\n\n"
+        f"🔄 Обмен #{trade_id.split('_')[1]}\n"
+        f"👤 От: @{from_user.username or 'пользователь'}\n"
+        f"📅 Отклонен: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"Вы можете просмотреть другие предложения обмена."
+    )
+    
+    await callback.answer("❌ Обмен отклонен")
+
 async def periodic_tasks():
     while True:
         try:
@@ -5474,4 +5436,3 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"❌ Непредвиденная ошибка: {e}")
         save_data()
-
