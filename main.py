@@ -84,7 +84,11 @@ IMAGES_DIR = DATA_DIR / "images"
 DATA_DIR.mkdir(exist_ok=True)
 IMAGES_DIR.mkdir(exist_ok=True)
 
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot (
+    token=config.config.BOT_TOKEN,
+    default+DefaultBotProperties (parse_mode=ParseMode.HTML)
+)
+
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
