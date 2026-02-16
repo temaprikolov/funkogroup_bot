@@ -21,15 +21,18 @@ from aiogram.client.default import DefaultBotProperties
 
 BOT_TOKEN = "8280702499:AAEScyLnr4z5wW84vOElGrTBmDy3fgOFRck"
 ADMIN_IDS = [8033943956, 7571242177]
-PREMIUM_COST = 299
-REDUCED_CD_COST = 400
-REDUCED_TRADE_CD_COST = 150
 
+# НОВЫЕ ЦЕНЫ
+PREMIUM_COST = 143
+REDUCED_CD_COST = 127
+REDUCED_TRADE_CD_COST = 67
+
+# НОВЫЕ ЦЕНЫ В МАГАЗИНЕ
 SHOP_PRICES = {
-    "basic": 99,
-    "cool": 199,
-    "legendary": 249,
-    "vinyl figure": 349
+    "basic": 53,
+    "cool": 93,
+    "legendary": 143,
+    "vinyl figure": 193
 }
 
 CHANNEL_ID = -1003750249832
@@ -43,11 +46,11 @@ MESSAGE_LIMIT = 5
 TIME_WINDOW = 1
 user_message_times = defaultdict(list)
 
+# СКИДКИ ЗА УРОВНИ (каждые 15 уровней +2%)
 LEVEL_SETTINGS = {
     'enabled': True,
     'base_exp_per_level': 100,
     'exp_multiplier': 1.5,
-    
     'level_rewards': {
         5: "unique_card_lvl5",
         10: "unique_card_lvl10", 
@@ -55,7 +58,6 @@ LEVEL_SETTINGS = {
         30: "unique_card_lvl30",
         50: "title_legend"
     },
-    
     'exp_actions': {
         'open_card': 10,
         'purchase_card': 50,
@@ -198,6 +200,21 @@ LEVELS_FILE = DATA_DIR / "levels.json"
 EXCLUSIVES_FILE = DATA_DIR / "exclusives.json"
 POPULARITY_FILE = DATA_DIR / "popularity.json"
 
+# НОВАЯ ФУНКЦИЯ ДЛЯ РАСЧЕТА СКИДКИ ПО УРОВНЮ
+def get_level_discount(level: int) -> int:
+    """Возвращает скидку в процентах на основе уровня"""
+    discount_per_15_levels = 2
+    discount = (level // 15) * discount_per_15_levels
+    return min(discount, 20)  # Максимум 20% скидка
+
+# НОВАЯ ФУНКЦИЯ ДЛЯ РАСЧЕТА ЦЕНЫ СО СКИДКОЙ
+def get_price_with_discount(original_price: int, level: int) -> int:
+    discount = get_level_discount(level)
+    if discount > 0:
+        discounted = original_price * (100 - discount) // 100
+        return max(discounted, 1)  # Минимум 1 рубль
+    return original_price
+
 async def check_access_before_handle(message_or_callback, user_id: int) -> bool:
     user = get_or_create_user(user_id)
     
@@ -247,22 +264,51 @@ async def send_order_notification(order_id: str, user_id: int, card_name: str, p
         logger.error(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
         return False
 
-async def show_payment_methods(callback: types.CallbackQuery, product_type: str, product_id: str, price: int, description: str = ""):
+# НОВАЯ ФУНКЦИЯ ДЛЯ РАССЫЛКИ ПРИ ОБНОВЛЕНИИ МАГАЗИНА
+async def notify_shop_update():
+    """Отправляет уведомление во все группы когда магазин обновляется"""
+    try:
+        # Формируем сообщение о новых карточках
+        message = "🛒 <b>МАГАЗИН ОБНОВЛЕН!</b>\n\n"
+        message += "Появились новые карточки! 🎴\n\n"
+        
+        for card_id, item in shop_items.items():
+            card = cards.get(card_id)
+            if card:
+                rarity_icon = get_rarity_color(card.rarity)
+                message += f"{rarity_icon} {card.name} - {item.price}₽\n"
+        
+        message += "\n⏰ Торопитесь, карточки исчезнут через 12 часов!"
+        message += "\n\n🎁 <i>Активирована ваша скидка за уровень!</i>"
+        
+        # Отправляем во все группы где есть бот (нужно будет получить список групп)
+        # Пока отправляем только в канал
+        await bot.send_message(CHANNEL_ID, message)
+        logger.info("✅ Уведомление об обновлении магазина отправлено в канал")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки уведомления об обновлении магазина: {e}")
+
+async def show_payment_methods(callback: types.CallbackQuery, product_type: str, product_id: str, price: int, description: str = "", level: int = 1):
+    # Применяем скидку за уровень
+    discounted_price = get_price_with_discount(price, level)
+    discount = get_level_discount(level)
+    
     keyboard = InlineKeyboardBuilder()
     
     keyboard.add(InlineKeyboardButton(
         text="🏦 Перевод на Т-Банк",
-        callback_data=f"payment_method:transfer:{product_type}:{product_id}:{price}"
+        callback_data=f"payment_method:transfer:{product_type}:{product_id}:{discounted_price}"
     ))
     
     keyboard.add(InlineKeyboardButton(
         text="🔗 Оплата по ссылке",
-        callback_data=f"payment_method:link:{product_type}:{product_id}:{price}"
+        callback_data=f"payment_method:link:{product_type}:{product_id}:{discounted_price}"
     ))
     
     keyboard.add(InlineKeyboardButton(
         text="👨‍💼 Через администратора",
-        callback_data=f"payment_method:admin:{product_type}:{product_id}:{price}"
+        callback_data=f"payment_method:admin:{product_type}:{product_id}:{discounted_price}"
     ))
     
     keyboard.add(InlineKeyboardButton(
@@ -271,10 +317,13 @@ async def show_payment_methods(callback: types.CallbackQuery, product_type: str,
     ))
     keyboard.adjust(1)
     
+    discount_text = f"\n🎁 <b>Скидка за уровень {level}:</b> {discount}% ({price}₽ → {discounted_price}₽)" if discount > 0 else ""
+    
     await callback.message.answer(
         f"💵 <b>Выберите способ оплаты</b>\n\n"
         f"🎁 <b>Товар:</b> {description}\n"
-        f"💰 <b>Сумма:</b> {price}₽\n\n"
+        f"💰 <b>Исходная цена:</b> {price}₽{discount_text}\n"
+        f"💳 <b>Итого к оплате:</b> {discounted_price}₽\n\n"
         f"<b>Доступные способы оплаты:</b>\n"
         f"1. 🏦 <b>Перевод на Т-Банк</b> - получите реквизиты карты\n"
         f"2. 🔗 <b>Оплата по ссылке</b> - перейдите по готовой ссылке\n"
@@ -418,7 +467,7 @@ async def send_reminder_message(user: User):
             "👋 <b>Привет! Давно тебя не было!</b>\n\n"
             "Ты давно не заходил в бота! Пора пополнить свою коллекцию карточек!\n\n"
             "🎴 <b>Что ты можешь сделать:</b>\n"
-            "• Напиши <b>фанко</b> в группе чтобы получить карточку\n"
+            "• Напиши <b>фанко</b>, <b>функо</b>, <b>funko</b> или <b>фанка</b> в группе чтобы получить карточку\n"
             "• Проверь свой инвентарь\n"
             "• Посмотри новые карточки в магазине\n"
             "• Обменяйся карточками с друзьями\n\n"
@@ -706,7 +755,6 @@ def get_user_by_username(username: str) -> Optional[User]:
     return None
 
 async def send_referral_bonus(user_id: int, referral_count: int, card_id: str):
-    """Отправляет уведомление о бонусе за приглашение"""
     try:
         user = users.get(user_id)
         if not user:
@@ -729,7 +777,6 @@ async def send_referral_bonus(user_id: int, referral_count: int, card_id: str):
         logger.error(f"Ошибка отправки уведомления о бонусе: {e}")
 
 async def send_new_referral_notification(user_id: int, new_referral_id: int):
-    """Уведомляет пользователя о новом реферале"""
     try:
         user = users.get(user_id)
         new_user = users.get(new_referral_id)
@@ -756,27 +803,21 @@ def get_or_create_user(user_id: int, username: str = "", first_name: str = "", r
     if user_id not in users:
         users[user_id] = User(user_id, username, first_name)
         
-        # Реферальная система: если есть referrer_id и это существующий пользователь
         if referrer_id and referrer_id in users and referrer_id != user_id:
             users[referrer_id].referrals.append(user_id)
             users[user_id].referrer_id = referrer_id
             
-            # Дарим опыт тому, кто пригласил
             add_experience(users[referrer_id], 'referral', 50)
-            
-            # Дарим опыт новичку
             add_experience(users[user_id], 'welcome_bonus', 100)
 
             asyncio.create_task(send_new_referral_notification(referrer_id, user_id))
             
-            # За каждых 3 приглашенных - карточка в подарок
             referral_count = len(users[referrer_id].referrals)
-            if referral_count % 3 == 0:  # Каждые 3 приглашенных
-                if referral_count <= 30:  # Максимум 10 карточек (30/3)
+            if referral_count % 3 == 0:
+                if referral_count <= 30:
                     card_id = random.choice(card_pool)
                     users[referrer_id].cards[card_id] = users[referrer_id].cards.get(card_id, 0) + 1
                     
-                    # Уведомляем о бонусе
                     try:
                         asyncio.create_task(send_referral_bonus(referrer_id, referral_count, card_id))
                     except:
@@ -1139,7 +1180,7 @@ def generate_shop_card() -> Optional[Tuple[str, int]]:
     
     selected_rarity = random.choice(rarity_pool)
     card_id = random.choice(cards_by_rarity[selected_rarity])
-    price = SHOP_PRICES.get(selected_rarity, 99)
+    price = SHOP_PRICES.get(selected_rarity, 53)
     
     return card_id, price
 
@@ -1156,6 +1197,7 @@ def update_shop():
     for card_id in expired_cards:
         del shop_items[card_id]
     
+    shop_updated = False
     while len(shop_items) < 3:
         result = generate_shop_card()
         if result:
@@ -1166,8 +1208,13 @@ def update_shop():
                 price=price,
                 expires_at=expires_at.isoformat()
             )
+            shop_updated = True
         else:
             break
+    
+    if shop_updated:
+        # Отправляем уведомление об обновлении магазина
+        asyncio.create_task(notify_shop_update())
     
     save_data()
 
@@ -1339,6 +1386,9 @@ class AdminStates(StatesGroup):
     waiting_for_freeze_days = State()
     waiting_for_unfreeze_username = State()
     waiting_for_order_id = State()
+    # НОВЫЕ СОСТОЯНИЯ ДЛЯ ВЫДАЧИ КАРТОЧКИ ПО ID
+    waiting_for_give_card_username = State()
+    waiting_for_give_card_id = State()
 
 class TradeStates(StatesGroup):
     selecting_my_cards = State()
@@ -1350,35 +1400,29 @@ class OrderStates(StatesGroup):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    """Обработчик команды /start"""
     user_id = message.from_user.id
     
-    # Извлекаем referrer_id из параметров команды
     referrer_id = None
     if len(message.text.split()) > 1:
         args = message.text.split()[1]
         if args.startswith('ref_'):
             try:
                 referrer_id = int(args.replace('ref_', ''))
-                # Проверяем, что это не сам пользователь и не фейковый ID
                 if referrer_id == user_id or referrer_id < 1000:
                     referrer_id = None
             except:
                 referrer_id = None
     
-    # Создаем/получаем пользователя с учетом реферала
     user = get_or_create_user(
         message.from_user.id, 
         message.from_user.username,
         message.from_user.first_name,
-        referrer_id  # Передаем referrer_id если есть
+        referrer_id
     )
     
-    # Проверяем доступ
     if not await check_access_before_handle(message, user_id):
         return
     
-    # Проверяем подписку
     is_subscribed = await check_subscription(user_id)
     
     if not is_subscribed:
@@ -1394,7 +1438,6 @@ async def cmd_start(message: types.Message):
         )
         return
     
-    # Добавляем информацию о рефералах если есть
     if user.referrer_id:
         referrer = users.get(user.referrer_id)
         if referrer:
@@ -1411,7 +1454,6 @@ async def cmd_start(message: types.Message):
         if claimed:
             await message.answer("🎁 <b>Получен ежедневный бонус: 3 карточки!</b>")
     
-    # Проверяем истекшие кулдауны
     if user.has_reduced_cd and user.reduced_cd_until:
         until_date = datetime.fromisoformat(user.reduced_cd_until)
         if until_date <= datetime.now():
@@ -1430,7 +1472,8 @@ async def cmd_start(message: types.Message):
         "🎮 <b>Добро пожаловать в мир карточек Фанко!</b>\n\n"
         "✅ <b>Вы успешно подписались на канал!</b>\n\n"
         "🎴 <b>Как получить карточку:</b>\n"
-        "Просто напишите слово <b>фанко</b> в любом групповом чате с ботом!\n\n"
+        "Просто напишите в групповом чате с ботом:\n"
+        "• <b>фанко</b> • <b>функо</b> • <b>funko</b> • <b>фанка</b>\n\n"
         "📱 <b>Основные возможности:</b>\n"
         "• 👤 Профиль - ваша статистика\n"
         "• 🎴 Инвентарь - все ваши карточки\n"
@@ -1453,7 +1496,7 @@ async def help_command(message: types.Message):
         "🎴 <b>Как получить карточку:</b>\n"
         "1. Добавьте бота в групповой чат\n"
         "2. Дайте боту права администратора\n"
-        "3. Напишите слово <b>фанко</b> в чате\n"
+        "3. Напишите в чате: <b>фанко</b>, <b>функо</b>, <b>funko</b> или <b>фанка</b>\n"
         "4. Получите случайную карточку!\n\n"
         "<b>Основные команды:</b>\n"
         "/start - Главное меню\n"
@@ -1467,20 +1510,16 @@ async def help_command(message: types.Message):
 
 @dp.message(Command("invite"))
 async def invite_command(message: types.Message):
-    """Команда для приглашения друзей"""
     if not await check_access_before_handle(message, message.from_user.id):
         return
     
     user = get_or_create_user(message.from_user.id)
     
-    # Получаем username бота
     bot_info = await bot.get_me()
     bot_username = bot_info.username
     
-    # Создаем реферальную ссылку
     invite_link = f"https://t.me/{bot_username}?start=ref_{user.user_id}"
     
-    # Создаем красивую клавиатуру
     keyboard = InlineKeyboardBuilder()
     keyboard.add(InlineKeyboardButton(
         text="📢 Поделиться ссылкой", 
@@ -1492,7 +1531,6 @@ async def invite_command(message: types.Message):
     ))
     keyboard.adjust(1)
     
-    # Статистика рефералов
     total_referrals = len(user.referrals)
     cards_earned = total_referrals // 3
     next_bonus_at = 3 - (total_referrals % 3) if total_referrals % 3 != 0 else 3
@@ -1519,7 +1557,6 @@ async def invite_command(message: types.Message):
 
 @dp.callback_query(lambda c: c.data == "my_referrals")
 async def my_referrals_handler(callback: types.CallbackQuery):
-    """Показывает список приглашенных друзей"""
     user = get_or_create_user(callback.from_user.id)
     
     if not user.referrals:
@@ -1528,11 +1565,9 @@ async def my_referrals_handler(callback: types.CallbackQuery):
     
     response = "👥 <b>Ваши приглашенные друзья:</b>\n\n"
     
-    # Показываем последних 20 рефералов
     for i, ref_id in enumerate(user.referrals[-20:], 1):
         ref_user = users.get(ref_id)
         if ref_user:
-            # Проверяем активность реферала
             last_seen = datetime.fromisoformat(ref_user.last_seen)
             days_ago = (datetime.now() - last_seen).days
             
@@ -1541,7 +1576,6 @@ async def my_referrals_handler(callback: types.CallbackQuery):
             
             response += f"{i}. {status} {username}\n"
     
-    # Статистика
     total = len(user.referrals)
     active = len([r for r in user.referrals if users.get(r) and (datetime.now() - datetime.fromisoformat(users[r].last_seen)).days < 7])
     cards_earned = total // 3
@@ -1850,10 +1884,8 @@ async def process_text_during_payment(message: types.Message, state: FSMContext)
         "<i>Пришлите фото скриншота оплаты...</i>"
     )
 
-# =============== ОБРАБОТЧИКИ ОБМЕНА ===============
 @dp.callback_query(lambda c: c.data == "cancel_trade")
 async def cancel_trade_handler(callback: types.CallbackQuery, state: FSMContext):
-    """Отмена создания обмена"""
     await state.clear()
     await callback.message.edit_text(
         "❌ <b>Создание обмена отменено</b>\n\n"
@@ -1863,20 +1895,17 @@ async def cancel_trade_handler(callback: types.CallbackQuery, state: FSMContext)
 
 @dp.message(TradeStates.selecting_partner)
 async def process_trade_partner(message: types.Message, state: FSMContext):
-    """Обработка username партнера для обмена"""
     if not await check_access_before_handle(message, message.from_user.id):
         await state.clear()
         return
     
     username = message.text.strip().lstrip('@')
     
-    # Если пользователь написал /refresh
     if username.lower() in ["/refresh", "отмена", "cancel", "stop", "стоп"]:
         await state.clear()
         await message.answer("✅ <b>Действие отменено!</b>")
         return
     
-    # Находим пользователя по username
     partner = get_user_by_username(username)
     
     if not partner:
@@ -1887,7 +1916,6 @@ async def process_trade_partner(message: types.Message, state: FSMContext):
         )
         return
     
-    # Нельзя предлагать обмен самому себе
     if partner.user_id == message.from_user.id:
         await message.answer(
             "❌ <b>Нельзя предлагать обмен самому себе!</b>\n\n"
@@ -1897,7 +1925,6 @@ async def process_trade_partner(message: types.Message, state: FSMContext):
     
     user = get_or_create_user(message.from_user.id)
     
-    # Проверяем, есть ли у пользователя карточки для обмена
     if not user.cards:
         await message.answer(
             "❌ <b>У вас нет карточек для обмена!</b>\n\n"
@@ -1906,17 +1933,18 @@ async def process_trade_partner(message: types.Message, state: FSMContext):
         await state.clear()
         return
     
-    # Проверяем кулдаун обменов у отправителя
     can_trade_now, remaining = can_trade(user)
     if not can_trade_now:
         await message.answer(
             f"⏰ <b>Вы можете создать обмен через {remaining}</b>\n\n"
-            f"Кулдаун обменов: {get_trade_cooldown_hours(user)} часа"
+            f"Кулдаун обменов: {get_trade_cooldown_hours(user)} часа\n\n"
+            f"💡 <b>Хотите уменьшить кулдаун?</b>\n"
+            f"Купите уменьшенный кулдаун обменов всего за {REDUCED_TRADE_CD_COST}₽/месяц!\n"
+            f"Нажмите 💝 Поддержать проект в главном меню."
         )
         await state.clear()
         return
     
-    # Проверяем кулдаун обменов у получателя
     partner_can_trade, partner_remaining = can_trade(partner)
     if not partner_can_trade:
         await message.answer(
@@ -1927,17 +1955,15 @@ async def process_trade_partner(message: types.Message, state: FSMContext):
         await state.clear()
         return
     
-    # Сохраняем данные партнера
     await state.update_data(
         partner_id=partner.user_id,
         partner_username=partner.username
     )
     
-    # Создаем клавиатуру с карточками пользователя
     keyboard = InlineKeyboardBuilder()
     
     for card_id, quantity in user.cards.items():
-        if quantity > 0:  # Только карточки, которые есть в наличии
+        if quantity > 0:
             card = cards.get(card_id)
             if card:
                 rarity_icon = get_rarity_color(card.rarity)
@@ -1963,7 +1989,6 @@ async def process_trade_partner(message: types.Message, state: FSMContext):
 
 @dp.callback_query(lambda c: c.data.startswith("select_trade_card_"), TradeStates.selecting_my_cards)
 async def select_trade_card_handler(callback: types.CallbackQuery, state: FSMContext):
-    """Обработчик выбора карточки для обмена"""
     card_id = callback.data.replace("select_trade_card_", "")
     
     user = get_or_create_user(callback.from_user.id)
@@ -1975,7 +2000,6 @@ async def select_trade_card_handler(callback: types.CallbackQuery, state: FSMCon
         await state.clear()
         return
     
-    # Проверяем, есть ли такая карточка у пользователя
     if card_id not in user.cards or user.cards[card_id] <= 0:
         await callback.answer("❌ У вас нет этой карточки!", show_alert=True)
         return
@@ -1985,11 +2009,9 @@ async def select_trade_card_handler(callback: types.CallbackQuery, state: FSMCon
         await callback.answer("❌ Карточка не найдена", show_alert=True)
         return
     
-    # Создаем обмен
     cards_to_give = [card_id]
     trade_id = create_trade(callback.from_user.id, partner_id, cards_to_give)
     
-    # Обновляем кулдаун обменов у отправителя
     user.last_trade_time = datetime.now().isoformat()
     update_user_interaction(user)
     save_data()
@@ -2003,7 +2025,6 @@ async def select_trade_card_handler(callback: types.CallbackQuery, state: FSMCon
         f"<i>Ожидайте подтверждения от пользователя</i>"
     )
     
-    # Уведомляем получателя
     partner = get_or_create_user(partner_id)
     try:
         await bot.send_message(
@@ -2060,7 +2081,8 @@ async def process_check_subscription(callback: types.CallbackQuery):
     await callback.message.answer(
         "🎮 <b>Добро пожаловать в мир карточек Фанко!</b>\n\n"
         "🎴 <b>Как получить карточку:</b>\n"
-        "Просто напишите слово <b>фанко</b> в любом групповом чате с ботом!\n\n"
+        "Просто напишите в групповом чате с ботом:\n"
+        "• <b>фанко</b> • <b>функо</b> • <b>funko</b> • <b>фанка</b>\n\n"
         "📱 <b>Основные возможности:</b>\n"
         "• 👤 Профиль - ваша статистика\n"
         "• 🎴 Инвентарь - все ваши карточки\n"
@@ -2073,11 +2095,17 @@ async def process_check_subscription(callback: types.CallbackQuery):
     
     await callback.answer()
 
-@dp.message(F.text.contains("фанко"))
+# НОВЫЙ ОБРАБОТЧИК - расширенные ключевые слова
+@dp.message(F.text.lower().contains("фанко") | 
+            F.text.lower().contains("функо") | 
+            F.text.lower().contains("fanco") | 
+            F.text.lower().contains("funko") | 
+            F.text.lower().contains("фанка"))
 async def open_fanco(message: types.Message):
     text = message.text.lower().strip()
     
-    if text not in ['фанко', 'fanco', 'фанк', 'фанка', 'фанку']:
+    valid_words = ['фанко', 'fanco', 'функо', 'funko', 'фанка', 'фанку']
+    if text not in valid_words:
         return
     
     if message.chat.type not in ["group", "supergroup"]:
@@ -2110,7 +2138,14 @@ async def open_fanco(message: types.Message):
     can_open, remaining = can_open_card(user)
     if not can_open:
         cooldown_hours = get_card_cooldown_hours(user)
-        await message.reply(f"⏰ <b>Подождите еще {remaining}</b> перед открытием следующей карточки!\n(Кулдаун: {cooldown_hours} часа)")
+        await message.reply(
+            f"⏰ <b>Подождите еще {remaining}</b> перед открытием следующей карточки!\n"
+            f"(Кулдаун: {cooldown_hours} часа)\n\n"
+            f"💡 <b>Хотите уменьшить кулдаун?</b>\n"
+            f"Купите уменьшенный кулдаун всего за {REDUCED_CD_COST}₽/месяц "
+            f"или премиум за {PREMIUM_COST}₽/месяц!\n"
+            f"Нажмите 💝 Поддержать проект в главном меню."
+        )
         return
     
     result = open_card(user)
@@ -2122,10 +2157,14 @@ async def open_fanco(message: types.Message):
     
     rarity_icon = get_rarity_color(card.rarity)
     cooldown_hours = get_card_cooldown_hours(user)
+    discount = get_level_discount(user.level)
+    discount_text = f"\n🎁 <b>Ваша скидка в магазине:</b> {discount}%" if discount > 0 else ""
+    
     response = f"🎴 <b>{message.from_user.first_name}, вы получили карточку!</b>\n\n"
     response += f"{rarity_icon} <b>{card.name}</b>\n"
     response += f"📊 Редкость: {get_rarity_name(card.rarity)}\n"
-    response += f"📈 Всего карточек: {sum(user.cards.values())}\n\n"
+    response += f"📈 Всего карточек: {sum(user.cards.values())}\n"
+    response += f"🎮 Уровень: {user.level}{discount_text}\n\n"
     response += f"⏰ <i>Следующая карточка через {cooldown_hours} часа</i>"
     
     image_path = get_image_path(card)
@@ -2177,6 +2216,8 @@ async def profile_menu(message: types.Message):
     trade_cooldown_hours = get_trade_cooldown_hours(user)
     trade_cooldown_status = "✅ Можно обмениваться" if can_trade_now else f"⏰ Ждать: {trade_remaining}"
     
+    discount = get_level_discount(user.level)
+    
     response = (
         f"👤 <b>Профиль {message.from_user.first_name}</b>\n\n"
         f"📊 <b>Основная статистика:</b>\n"
@@ -2185,7 +2226,8 @@ async def profile_menu(message: types.Message):
         f"⭐ Уникальных карточек: {len(user.cards)}\n"
         f"📈 Процент коллекции: {total_percentage:.1f}%\n\n"
         f"⏰ <b>Кулдаун карточек ({card_cooldown_hours}ч):</b> {card_cooldown_status}\n"
-        f"🔄 <b>Кулдаун обменов ({trade_cooldown_hours}ч):</b> {trade_cooldown_status}\n"
+        f"🔄 <b>Кулдаун обменов ({trade_cooldown_hours}ч):</b> {trade_cooldown_status}\n\n"
+        f"🎁 <b>Скидка в магазине:</b> {discount}%\n"
     )
     
     if user.is_premium:
@@ -2230,7 +2272,9 @@ async def profile_menu(message: types.Message):
         for rec in recommendations:
             card = rec['card']
             rarity_icon = get_rarity_color(card.rarity)
-            response += f"{rarity_icon} {card.name} - {rec['price']}₽\n"
+            discounted = get_price_with_discount(rec['price'], user.level)
+            price_text = f"{discounted}₽" if discount > 0 else f"{rec['price']}₽"
+            response += f"{rarity_icon} {card.name} - {price_text}\n"
         response += "<i>На основе ваших предпочтений</i>\n"
     
     await message.answer(response)
@@ -2248,6 +2292,13 @@ async def support_menu(message: types.Message):
             "После подписки нажмите /start"
         )
         return
+    
+    user = get_or_create_user(message.from_user.id)
+    discount = get_level_discount(user.level)
+    
+    premium_discounted = get_price_with_discount(PREMIUM_COST, user.level)
+    cd_discounted = get_price_with_discount(REDUCED_CD_COST, user.level)
+    trade_cd_discounted = get_price_with_discount(REDUCED_TRADE_CD_COST, user.level)
     
     keyboard = InlineKeyboardBuilder()
     keyboard.add(InlineKeyboardButton(
@@ -2276,19 +2327,27 @@ async def support_menu(message: types.Message):
     ))
     keyboard.adjust(2)
     
+    discount_text = f"\n🎁 <b>Ваша скидка {discount}%:</b>" if discount > 0 else ""
+    
     await message.answer(
         f"💝 <b>Поддержать проект</b>\n\n"
         f"Вы можете поддержать развитие бота:\n\n"
         f"💰 <b>Разовое пожертвование:</b>\n"
         f"Любая сумма на развитие проекта\n\n"
-        f"💎 <b>Премиум подписка ({PREMIUM_COST}₽/месяц):</b>\n"
+        f"💎 <b>Премиум подписка:</b>\n"
+        f"Исходная цена: {PREMIUM_COST}₽/месяц{discount_text}\n"
+        f"<b>Ваша цена:</b> {premium_discounted}₽/месяц\n"
         f"• Удвоенный шанс на редкие карты\n"
-        f"• 10 карточки при подключении\n"
+        f"• 10 карточек при подключении\n"
         f"• Ежедневный бонус: 3 карточки\n\n"
-        f"⚡ <b>Снизить кулдаун карточек ({REDUCED_CD_COST}₽/месяц):</b>\n"
-        f"После покупки этой функции ваш кулдаун сократится с 4х часов до 2х!\n\n"
-        f"🔄 <b>Снизить кулдаун обменов ({REDUCED_TRADE_CD_COST}₽/месяц):</b>\n"
-        f"Кулдаун обменов сократится с 4х часов до 2х!\n\n"
+        f"⚡ <b>Снизить кулдаун карточек:</b>\n"
+        f"Исходная цена: {REDUCED_CD_COST}₽/месяц{discount_text}\n"
+        f"<b>Ваша цена:</b> {cd_discounted}₽/месяц\n"
+        f"• Кулдаун сократится с 4х часов до 2х!\n\n"
+        f"🔄 <b>Снизить кулдаун обменов:</b>\n"
+        f"Исходная цена: {REDUCED_TRADE_CD_COST}₽/месяц{discount_text}\n"
+        f"<b>Ваша цена:</b> {trade_cd_discounted}₽/месяц\n"
+        f"• Кулдаун обменов сократится с 4х часов до 2х!\n\n"
         f"После оплаты отправьте скриншот: @prikolovwork",
         reply_markup=keyboard.as_markup()
     )
@@ -2297,12 +2356,14 @@ async def support_menu(message: types.Message):
 async def buy_premium_handler(callback: types.CallbackQuery):
     await callback.answer()
     
+    user = get_or_create_user(callback.from_user.id)
     await show_payment_methods(
         callback=callback,
         product_type="premium",
         product_id="premium_30_days",
         price=PREMIUM_COST,
-        description="Премиум подписка на 1 месяц"
+        description="Премиум подписка на 1 месяц",
+        level=user.level
     )
 
 @dp.callback_query(lambda c: c.data == "buy_reduced_cd")
@@ -2311,16 +2372,21 @@ async def buy_reduced_cd_handler(callback: types.CallbackQuery):
     
     user = get_or_create_user(callback.from_user.id)
     
+    discounted_price = get_price_with_discount(REDUCED_CD_COST, user.level)
+    
     order_id = f"reduced_cd_{int(datetime.now().timestamp())}_{random.randint(1000, 9999)}"
     
-    order = Order(order_id, user.user_id, "reduced_cd_30_days", REDUCED_CD_COST)
+    order = Order(order_id, user.user_id, "reduced_cd_30_days", discounted_price)
     orders[order_id] = order
     save_data()
+    
+    discount_text = f" (скидка {get_level_discount(user.level)}%)" if get_level_discount(user.level) > 0 else ""
     
     await callback.message.answer(
         f"✅ <b>Заказ создан!</b>\n\n"
         f"🎁 <b>Товар:</b> Уменьшенный кулдаун карточек на 1 месяц\n"
-        f"💰 <b>Сумма:</b> {REDUCED_CD_COST}₽\n"
+        f"💰 <b>Исходная сумма:</b> {REDUCED_CD_COST}₽{discount_text}\n"
+        f"💳 <b>Итого к оплате:</b> {discounted_price}₽\n"
         f"🆔 <b>Номер заказа:</b> <code>{order_id}</code>\n\n"
         f"📝 <b>Запомните номер заказа!</b>\n"
         f"Он понадобится для отправки скриншота оплаты.\n\n"
@@ -2332,7 +2398,8 @@ async def buy_reduced_cd_handler(callback: types.CallbackQuery):
         product_type="reduced_cd",
         product_id="reduced_cd_30_days",
         price=REDUCED_CD_COST,
-        description="Уменьшенный кулдаун карточек на 1 месяц"
+        description="Уменьшенный кулдаун карточек на 1 месяц",
+        level=user.level
     )
     
     for admin_id in ADMIN_IDS:
@@ -2343,7 +2410,7 @@ async def buy_reduced_cd_handler(callback: types.CallbackQuery):
                      f"🆔 <b>Номер:</b> {order_id}\n"
                      f"👤 <b>Пользователь:</b> @{user.username or 'без username'}\n"
                      f"🎴 <b>Товар:</b> Уменьшенный кулдаун карточек на 30 дней\n"
-                     f"💰 <b>Сумма:</b> {REDUCED_CD_COST}₽\n"
+                     f"💰 <b>Сумма:</b> {discounted_price}₽ (исходная: {REDUCED_CD_COST}₽, скидка {get_level_discount(user.level)}%)\n"
                      f"📅 <b>Создан:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
                      f"<i>Ожидайте скриншот оплаты от пользователя</i>"
             )
@@ -2356,16 +2423,21 @@ async def buy_reduced_trade_cd_handler(callback: types.CallbackQuery):
     
     user = get_or_create_user(callback.from_user.id)
     
+    discounted_price = get_price_with_discount(REDUCED_TRADE_CD_COST, user.level)
+    
     order_id = f"reduced_trade_cd_{int(datetime.now().timestamp())}_{random.randint(1000, 9999)}"
     
-    order = Order(order_id, user.user_id, "reduced_trade_cd_30_days", REDUCED_TRADE_CD_COST)
+    order = Order(order_id, user.user_id, "reduced_trade_cd_30_days", discounted_price)
     orders[order_id] = order
     save_data()
+    
+    discount_text = f" (скидка {get_level_discount(user.level)}%)" if get_level_discount(user.level) > 0 else ""
     
     await callback.message.answer(
         f"✅ <b>Заказ создан!</b>\n\n"
         f"🎁 <b>Товар:</b> Уменьшенный кулдаун обменов на 1 месяц\n"
-        f"💰 <b>Сумма:</b> {REDUCED_TRADE_CD_COST}₽\n"
+        f"💰 <b>Исходная сумма:</b> {REDUCED_TRADE_CD_COST}₽{discount_text}\n"
+        f"💳 <b>Итого к оплате:</b> {discounted_price}₽\n"
         f"🆔 <b>Номер заказа:</b> <code>{order_id}</code>\n\n"
         f"📝 <b>Запомните номер заказа!</b>\n"
         f"Он понадобится для отправки скриншота оплаты.\n\n"
@@ -2377,7 +2449,8 @@ async def buy_reduced_trade_cd_handler(callback: types.CallbackQuery):
         product_type="reduced_trade_cd",
         product_id="reduced_trade_cd_30_days",
         price=REDUCED_TRADE_CD_COST,
-        description="Уменьшенный кулдаун обменов на 1 месяц"
+        description="Уменьшенный кулдаун обменов на 1 месяц",
+        level=user.level
     )
     
     for admin_id in ADMIN_IDS:
@@ -2388,7 +2461,7 @@ async def buy_reduced_trade_cd_handler(callback: types.CallbackQuery):
                      f"🆔 <b>Номер:</b> {order_id}\n"
                      f"👤 <b>Пользователь:</b> @{user.username or 'без username'}\n"
                      f"🎴 <b>Товар:</b> Уменьшенный кулдаун обменов на 30 дней\n"
-                     f"💰 <b>Сумма:</b> {REDUCED_TRADE_CD_COST}₽\n"
+                     f"💰 <b>Сумма:</b> {discounted_price}₽ (исходная: {REDUCED_TRADE_CD_COST}₽, скидка {get_level_discount(user.level)}%)\n"
                      f"📅 <b>Создан:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
                      f"<i>Ожидайте скриншот оплаты от пользователя</i>"
             )
@@ -2539,6 +2612,9 @@ async def shop_menu_handler(message: types.Message):
     
     update_shop()
     
+    user = get_or_create_user(message.from_user.id)
+    discount = get_level_discount(user.level)
+    
     if not shop_items:
         await message.answer(
             "🛒 <b>Магазин карточек</b>\n\n"
@@ -2561,8 +2637,11 @@ async def shop_menu_handler(message: types.Message):
             time_left = expires_at - datetime.now()
             hours_left = max(0, int(time_left.total_seconds() // 3600))
             
+            discounted = get_price_with_discount(item.price, user.level)
+            price_text = f"{discounted}₽" if discount > 0 else f"{item.price}₽"
+            
             keyboard.add(InlineKeyboardButton(
-                text=f"{rarity_icon} {card.name} - {item.price}₽ ({hours_left}ч)",
+                text=f"{rarity_icon} {card.name} - {price_text} ({hours_left}ч)",
                 callback_data=f"shop_buy_{card_id}"
             ))
     
@@ -2580,21 +2659,22 @@ async def shop_menu_handler(message: types.Message):
     ))
     keyboard.adjust(1)
     
-    user = get_or_create_user(message.from_user.id)
     last_check = ""
     if user.last_shop_check:
         last_check_time = datetime.fromisoformat(user.last_shop_check)
         last_check = f"\n🕐 <b>Последняя проверка:</b> {last_check_time.strftime('%d.%m.%Y %H:%M')}"
     
+    discount_text = f"\n🎁 <b>Ваша скидка {discount}%</b>" if discount > 0 else ""
+    
     await message.answer(
         f"🛒 <b>Магазин карточек</b>\n\n"
         f"Доступно карточек: {len(shop_items)}\n"
-        f"🕐 <b>Обновление:</b> каждые 12 часов{last_check}\n\n"
-        f"<b>Цены по редкостям:</b>\n"
-        f"⚪️ Обычная: {SHOP_PRICES['basic']}₽\n"
-        f"🔵 Крутая: {SHOP_PRICES['cool']}₽\n"
-        f"🟡 Легендарная: {SHOP_PRICES['legendary']}₽\n"
-        f"🟣 Виниловая фигурка: {SHOP_PRICES['vinyl figure']}₽\n\n"
+        f"🕐 <b>Обновление:</b> каждые 12 часов{last_check}{discount_text}\n\n"
+        f"<b>Цены по редкостям (со скидкой):</b>\n"
+        f"⚪️ Обычная: {get_price_with_discount(SHOP_PRICES['basic'], user.level)}₽ (было {SHOP_PRICES['basic']}₽)\n"
+        f"🔵 Крутая: {get_price_with_discount(SHOP_PRICES['cool'], user.level)}₽ (было {SHOP_PRICES['cool']}₽)\n"
+        f"🟡 Легендарная: {get_price_with_discount(SHOP_PRICES['legendary'], user.level)}₽ (было {SHOP_PRICES['legendary']}₽)\n"
+        f"🟣 Виниловая фигурка: {get_price_with_discount(SHOP_PRICES['vinyl figure'], user.level)}₽ (было {SHOP_PRICES['vinyl figure']}₽)\n\n"
         f"<b>Доступные карточки:</b>",
         reply_markup=keyboard.as_markup()
     )
@@ -2614,6 +2694,8 @@ async def shop_refresh_handler(callback: types.CallbackQuery):
     save_data()
     
     await callback.answer("🛒 Магазин обновлен!")
+    
+    discount = get_level_discount(user.level)
     
     if not shop_items:
         await callback.message.edit_text(
@@ -2637,8 +2719,11 @@ async def shop_refresh_handler(callback: types.CallbackQuery):
             time_left = expires_at - datetime.now()
             hours_left = max(0, int(time_left.total_seconds() // 3600))
             
+            discounted = get_price_with_discount(item.price, user.level)
+            price_text = f"{discounted}₽" if discount > 0 else f"{item.price}₽"
+            
             keyboard.add(InlineKeyboardButton(
-                text=f"{rarity_icon} {card.name} - {item.price}₽ ({hours_left}ч)",
+                text=f"{rarity_icon} {card.name} - {price_text} ({hours_left}ч)",
                 callback_data=f"shop_buy_{card_id}"
             ))
     
@@ -2656,11 +2741,13 @@ async def shop_refresh_handler(callback: types.CallbackQuery):
     ))
     keyboard.adjust(1)
     
+    discount_text = f"\n🎁 <b>Ваша скидка {discount}%</b>" if discount > 0 else ""
+    
     await callback.message.edit_text(
         f"🛒 <b>Магазин карточек (обновлено)</b>\n\n"
         f"Доступно карточек: {len(shop_items)}\n"
         f"🕐 <b>Обновление:</b> каждые 12 часов\n"
-        f"🕐 <b>Последняя проверка:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"🕐 <b>Последняя проверка:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}{discount_text}\n\n"
         f"<b>Доступные карточки:</b>",
         reply_markup=keyboard.as_markup()
     )
@@ -2696,18 +2783,21 @@ async def shop_buy_handler(callback: types.CallbackQuery):
         await callback.answer("❌ Срок действия карточки истек!", show_alert=True)
         return
     
-    order = create_order(user, card_id, item.price)
+    discounted_price = get_price_with_discount(item.price, user.level)
+    order = create_order(user, card_id, discounted_price)
     
     if not order:
         await callback.answer("❌ Не удалось создать заказ!", show_alert=True)
         return
     
     rarity_icon = get_rarity_color(card.rarity)
+    discount_text = f" (скидка {get_level_discount(user.level)}%)" if get_level_discount(user.level) > 0 else ""
     
     await callback.message.answer(
         f"✅ <b>Заказ создан!</b>\n\n"
         f"🎁 <b>Товар:</b> {rarity_icon} {card.name} ({get_rarity_name(card.rarity)})\n"
-        f"💰 <b>Сумма:</b> {item.price}₽\n"
+        f"💰 <b>Исходная сумма:</b> {item.price}₽{discount_text}\n"
+        f"💳 <b>Итого к оплате:</b> {discounted_price}₽\n"
         f"🆔 <b>Номер заказа:</b> <code>{order.order_id}</code>\n\n"
         f"📝 <b>Запомните номер заказа!</b>\n"
         f"Он понадобится для отправки скриншота оплаты.\n\n"
@@ -2719,7 +2809,8 @@ async def shop_buy_handler(callback: types.CallbackQuery):
         product_type="shop_card",
         product_id=card_id,
         price=item.price,
-        description=f"{rarity_icon} {card.name} ({get_rarity_name(card.rarity)})"
+        description=f"{rarity_icon} {card.name} ({get_rarity_name(card.rarity)})",
+        level=user.level
     )
     
     for admin_id in ADMIN_IDS:
@@ -2730,7 +2821,7 @@ async def shop_buy_handler(callback: types.CallbackQuery):
                      f"🆔 <b>Номер:</b> {order.order_id}\n"
                      f"👤 <b>Пользователь:</b> @{user.username or 'без username'}\n"
                      f"🎴 <b>Карточка:</b> {card.name}\n"
-                     f"💰 <b>Сумма:</b> {item.price}₽\n"
+                     f"💰 <b>Сумма:</b> {discounted_price}₽ (исходная: {item.price}₽, скидка {get_level_discount(user.level)}%)\n"
                      f"📅 <b>Создан:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
                      f"<i>Ожидайте скриншот оплаты от пользователя</i>"
             )
@@ -2744,6 +2835,9 @@ async def shop_help_handler(callback: types.CallbackQuery):
     if not await check_access_before_handle(callback, callback.from_user.id):
         return
     
+    user = get_or_create_user(callback.from_user.id)
+    discount = get_level_discount(user.level)
+    
     await callback.message.answer(
         "🛒 <b>Помощь по магазину</b>\n\n"
         "🎴 <b>Как работает магазин:</b>\n"
@@ -2752,12 +2846,12 @@ async def shop_help_handler(callback: types.CallbackQuery):
         "• При нажатии на карточку создается заказ\n"
         "• Оплатите заказ и отправьте скриншот через /payment\n"
         "• Администратор подтвердит заказ в течение 24 часов\n\n"
-        
-        "💰 <b>Цены по редкостям:</b>\n"
-        f"• ⚪️ Обычная: {SHOP_PRICES['basic']}₽\n"
-        f"• 🔵 Крутая: {SHOP_PRICES['cool']}₽\n"
-        f"• 🟡 Легендарная: {SHOP_PRICES['legendary']}₽\n"
-        f"• 🟣 Виниловая фигурка: {SHOP_PRICES['vinyl figure']}₽\n\n"
+        f"🎁 <b>Ваша скидка за уровень {user.level}:</b> {discount}%\n\n"
+        "💰 <b>Цены по редкостям (для вас):</b>\n"
+        f"• ⚪️ Обычная: {get_price_with_discount(SHOP_PRICES['basic'], user.level)}₽ (было {SHOP_PRICES['basic']}₽)\n"
+        f"• 🔵 Крутая: {get_price_with_discount(SHOP_PRICES['cool'], user.level)}₽ (было {SHOP_PRICES['cool']}₽)\n"
+        f"• 🟡 Легендарная: {get_price_with_discount(SHOP_PRICES['legendary'], user.level)}₽ (было {SHOP_PRICES['legendary']}₽)\n"
+        f"• 🟣 Виниловая фигурка: {get_price_with_discount(SHOP_PRICES['vinyl figure'], user.level)}₽ (было {SHOP_PRICES['vinyl figure']}₽)\n\n"
         
         "⏰ <b>Время обновления:</b>\n"
         "• Магазин обновляется каждые 12 часов\n"
@@ -2796,6 +2890,9 @@ async def exclusive_shop_handler(message: types.Message):
         )
         return
     
+    user = get_or_create_user(message.from_user.id)
+    discount = get_level_discount(user.level)
+    
     active_exclusives = [ec for ec in exclusive_cards.values() if ec.can_purchase()]
     
     if not active_exclusives:
@@ -2812,18 +2909,23 @@ async def exclusive_shop_handler(message: types.Message):
         card = cards.get(exclusive.card_id)
         if card:
             remaining = exclusive.total_copies - exclusive.sold_copies
+            discounted = get_price_with_discount(exclusive.price, user.level)
+            price_text = f"{discounted}₽" if discount > 0 else f"{exclusive.price}₽"
             
             keyboard.add(InlineKeyboardButton(
-                text=f"🎴 {card.name} - {exclusive.price}₽ ({remaining}/{exclusive.total_copies})",
+                text=f"🎴 {card.name} - {price_text} ({remaining}/{exclusive.total_copies})",
                 callback_data=f"buy_exclusive_{exclusive.card_id}"
             ))
     
     keyboard.adjust(1)
     
+    discount_text = f"\n🎁 <b>Ваша скидка {discount}%</b>" if discount > 0 else ""
+    
     response = "🎪 <b>ЭКСКЛЮЗИВНЫЕ КАРТОЧКИ</b>\n\n"
     response += "🔥 <b>Только здесь! Только сейчас!</b>\n"
     response += "Эти карточки можно получить ТОЛЬКО покупкой.\n"
-    response += "Они никогда не выпадают из обычных наборов.\n\n"
+    response += "Они никогда не выпадают из обычных наборов.\n"
+    response += f"{discount_text}\n\n"
     response += "<b>Доступные эксклюзивы:</b>\n"
     
     await message.answer(response, reply_markup=keyboard.as_markup())
@@ -2851,17 +2953,21 @@ async def buy_exclusive_handler(callback: types.CallbackQuery):
         return
     
     user = get_or_create_user(callback.from_user.id)
+    discounted_price = get_price_with_discount(exclusive.price, user.level)
     
     order_id = f"exclusive_{int(datetime.now().timestamp())}_{random.randint(1000, 9999)}"
     
-    order = Order(order_id, user.user_id, card_id, exclusive.price)
+    order = Order(order_id, user.user_id, card_id, discounted_price)
     orders[order_id] = order
     save_data()
+    
+    discount_text = f" (скидка {get_level_discount(user.level)}%)" if get_level_discount(user.level) > 0 else ""
     
     await callback.message.answer(
         f"✅ <b>Заказ создан!</b>\n\n"
         f"🎁 <b>Товар:</b> 🎴 {card.name} (ЭКСКЛЮЗИВ)\n"
-        f"💰 <b>Сумма:</b> {exclusive.price}₽\n"
+        f"💰 <b>Исходная сумма:</b> {exclusive.price}₽{discount_text}\n"
+        f"💳 <b>Итого к оплате:</b> {discounted_price}₽\n"
         f"🆔 <b>Номер заказа:</b> <code>{order_id}</code>\n"
         f"📦 <b>Осталось копий:</b> {exclusive.total_copies - exclusive.sold_copies}/{exclusive.total_copies}\n\n"
         f"📝 <b>Запомните номер заказа!</b>\n"
@@ -2874,7 +2980,8 @@ async def buy_exclusive_handler(callback: types.CallbackQuery):
         product_type="exclusive_card",
         product_id=card_id,
         price=exclusive.price,
-        description=f"🎴 {card.name} (ЭКСКЛЮЗИВ)"
+        description=f"🎴 {card.name} (ЭКСКЛЮЗИВ)",
+        level=user.level
     )
     
     await callback.answer("✅ Заказ создан!")
@@ -3052,14 +3159,19 @@ async def trade_menu_handler(message: types.Message):
     ))
     keyboard.adjust(2)
     
+    can_trade_now, remaining = can_trade(user)
+    trade_status = "✅ Можно обмениваться" if can_trade_now else f"⏰ Ждать: {remaining}"
+    
     await message.answer(
         "🔄 <b>Система обмена карточками</b>\n\n"
         "Здесь вы можете обмениваться карточками с другими пользователями.\n\n"
         "📝 <b>Создать предложение</b> - предложить обмен другому пользователю\n"
         "📨 <b>Мои предложения</b> - созданные вами предложения\n"
         "📥 <b>Входящие предложения</b> - предложения от других пользователей\n\n"
-        "⏰ <b>Кулдаун обменов:</b> 4 часа (2 часа с премиумом)\n"
-        "📈 <b>Статус:</b> " + ("✅ Можно обмениваться" if can_trade(user)[0] else f"⏰ Ждать: {can_trade(user)[1]}"),
+        f"⏰ <b>Кулдаун обменов:</b> 4 часа (2 часа с премиумом)\n"
+        f"📈 <b>Статус:</b> {trade_status}\n\n"
+        f"💡 <b>Хотите уменьшить кулдаун?</b>\n"
+        f"Купите уменьшенный кулдаун обменов всего за {get_price_with_discount(REDUCED_TRADE_CD_COST, user.level)}₽/месяц!",
         reply_markup=keyboard.as_markup()
     )
 
@@ -3072,7 +3184,11 @@ async def create_trade_handler(callback: types.CallbackQuery, state: FSMContext)
     
     can_trade_now, remaining = can_trade(user)
     if not can_trade_now:
-        await callback.answer(f"⏰ Вы можете создать обмен через {remaining}", show_alert=True)
+        await callback.answer(
+            f"⏰ Вы можете создать обмен через {remaining}\n\n"
+            f"💡 Купите уменьшенный кулдаун за {get_price_with_discount(REDUCED_TRADE_CD_COST, user.level)}₽!",
+            show_alert=True
+        )
         return
     
     if not user.cards:
@@ -3161,6 +3277,8 @@ async def trade_help_handler(callback: types.CallbackQuery):
     if not await check_access_before_handle(callback, callback.from_user.id):
         return
     
+    user = get_or_create_user(callback.from_user.id)
+    
     await callback.message.answer(
         "❓ <b>Как работает система обмена</b>\n\n"
         "1. <b>Создание обмена:</b>\n"
@@ -3173,7 +3291,10 @@ async def trade_help_handler(callback: types.CallbackQuery):
         "• Подтвердите обмен\n\n"
         "3. <b>Кулдаун:</b>\n"
         "• Между обменами: 4 часа\n"
-        "• С премиумом: 2 часа\n\n"
+        "• С премиумом: 2 часа\n"
+        f"• Ваш текущий кулдаун: {get_trade_cooldown_hours(user)} часа\n\n"
+        f"💡 <b>Уменьшить кулдаун:</b>\n"
+        f"Купите уменьшенный кулдаун обменов всего за {get_price_with_discount(REDUCED_TRADE_CD_COST, user.level)}₽/месяц!\n\n"
         "4. <b>Важно:</b>\n"
         "• Обмен можно отклонить\n"
         "• Карточки возвращаются при отмене\n"
@@ -3195,16 +3316,19 @@ async def help_menu(message: types.Message):
         )
         return
     
+    user = get_or_create_user(message.from_user.id)
+    
     await message.answer(
         "❓ <b>Помощь и инструкции</b>\n\n"
         "🎴 <b>Как получить карточку:</b>\n"
         "1. Добавьте бота в групповой чат\n"
         "2. Дайте боту права администратора\n"
-        "3. Напишите слово <b>фанко</b> в чате\n"
+        "3. Напишите в чате: <b>фанко</b>, <b>функо</b>, <b>funko</b> или <b>фанка</b>\n"
         "4. Получите случайную карточку!\n\n"
         
         "🛒 <b>Магазин:</b>\n"
         "• Новые карточки каждые 12 часов\n"
+        f"• Ваша скидка за уровень {user.level}: {get_level_discount(user.level)}%\n"
         "• Цены зависят от редкости\n"
         "• Для покупки создается заказ, нужно отправить скриншот оплаты\n"
         "• Используйте /payment для отправки скриншота\n\n"
@@ -3471,15 +3595,12 @@ async def top_total_cards_handler(callback: types.CallbackQuery):
 
 @dp.message(Command("topreferrals"))
 async def top_referrals_command(message: types.Message):
-    """Топ пользователей по приглашениям"""
     if not await check_access_before_handle(message, message.from_user.id):
         return
     
-    # Сортируем пользователей по количеству рефералов
     users_with_referrals = []
     for user in users.values():
         if user.referrals:
-            # Считаем только активных рефералов (были онлайн за последнюю неделю)
             active_referrals = 0
             for ref_id in user.referrals:
                 ref_user = users.get(ref_id)
@@ -3499,7 +3620,6 @@ async def top_referrals_command(message: types.Message):
         await message.answer("📊 <b>Топ по приглашениям</b>\n\nПока никто не пригласил друзей.")
         return
     
-    # Сортируем по количеству рефералов
     users_with_referrals.sort(key=lambda x: x['total'], reverse=True)
     
     response = "🏆 <b>ТОП ПРИГЛАШАЛОВ</b>\n\n"
@@ -3513,7 +3633,6 @@ async def top_referrals_command(message: types.Message):
         response += f"   🎴 Карточек получено: {data['cards']}\n"
         response += f"   ⭐ Уровень: {user.level}\n\n"
     
-    # Показываем позицию текущего пользователя
     current_user = get_or_create_user(message.from_user.id)
     current_position = None
     
@@ -3551,6 +3670,8 @@ async def cmd_admin(message: types.Message):
     keyboard.add(InlineKeyboardButton(text="⏰ Добавить кулдаун", callback_data="admin_add_cooldown"))
     keyboard.add(InlineKeyboardButton(text="⚡ Выдать уменьш. кулдаун", callback_data="admin_give_reduced_cd"))
     keyboard.add(InlineKeyboardButton(text="🔄 Выдать уменьш. кулдаун обменов", callback_data="admin_give_reduced_trade_cd"))
+    # НОВАЯ КНОПКА - Выдать карточку по ID
+    keyboard.add(InlineKeyboardButton(text="🎁 Выдать карточку по ID", callback_data="admin_give_card_by_id"))
     keyboard.add(InlineKeyboardButton(text="📋 Заказы", callback_data="admin_orders"))
     keyboard.add(InlineKeyboardButton(text="⛔ Забанить пользователя", callback_data="admin_ban_user"))
     keyboard.add(InlineKeyboardButton(text="✅ Разбанить пользователя", callback_data="admin_unban_user"))
@@ -3560,12 +3681,133 @@ async def cmd_admin(message: types.Message):
     keyboard.add(InlineKeyboardButton(text="📥 База данных", callback_data="admin_database"))
     keyboard.add(InlineKeyboardButton(text="🔄 Обновить пул", callback_data="admin_update_pool"))
     keyboard.add(InlineKeyboardButton(text="🔄 Перезапуск бота", callback_data="admin_restart"))
-    keyboard.adjust(2, 2, 2, 2, 2, 2, 2, 1)
+    keyboard.adjust(2, 2, 2, 2, 2, 2, 2, 2, 1)
     
     await message.answer(
         "⚙️ <b>Админ-панель</b>\n\nВыберите действие:",
         reply_markup=keyboard.as_markup()
     )
+
+# НОВЫЙ ОБРАБОТЧИК - Выдача карточки по ID
+@dp.callback_query(lambda c: c.data == "admin_give_card_by_id")
+async def admin_give_card_by_id_handler(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+    
+    await callback.message.answer(
+        "🎁 <b>Выдача карточки по ID</b>\n\n"
+        "Введите username пользователя (начиная с @), которому хотите выдать карточку:"
+    )
+    await state.set_state(AdminStates.waiting_for_give_card_username)
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_give_card_username)
+async def process_give_card_username(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    
+    username = message.text.strip().lstrip('@')
+    user = get_user_by_username(username)
+    
+    if not user:
+        await message.answer(
+            f"❌ Пользователь @{username} не найден.\n\n"
+            f"Попробуйте еще раз или напишите /refresh для отмены:"
+        )
+        return
+    
+    await state.update_data(target_user_id=user.user_id, target_username=username)
+    
+    # Показываем список доступных карточек
+    if not cards:
+        await message.answer("❌ В системе нет карточек для выдачи.")
+        await state.clear()
+        return
+    
+    cards_list = "\n".join([f"• <code>{card_id}</code>: {card.name} ({get_rarity_name(card.rarity)})" 
+                           for card_id, card in cards.items()])
+    
+    await message.answer(
+        f"✅ Пользователь: @{username}\n\n"
+        f"📋 <b>Доступные карточки:</b>\n"
+        f"{cards_list}\n\n"
+        f"Введите ID карточки для выдачи:"
+    )
+    await state.set_state(AdminStates.waiting_for_give_card_id)
+
+@dp.message(AdminStates.waiting_for_give_card_id)
+async def process_give_card_id(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    
+    card_id = message.text.strip()
+    
+    if card_id.lower() == "/refresh":
+        await state.clear()
+        await message.answer("✅ <b>Действие отменено!</b>")
+        return
+    
+    if card_id not in cards:
+        await message.answer(
+            f"❌ Карточка с ID '{card_id}' не найдена.\n\n"
+            f"Проверьте ID и попробуйте еще раз или напишите /refresh для отмены:"
+        )
+        return
+    
+    data = await state.get_data()
+    target_user_id = data.get('target_user_id')
+    target_username = data.get('target_username')
+    
+    if not target_user_id:
+        await message.answer("❌ Ошибка: пользователь не найден.")
+        await state.clear()
+        return
+    
+    user = users.get(target_user_id)
+    if not user:
+        await message.answer("❌ Ошибка: пользователь не найден в базе.")
+        await state.clear()
+        return
+    
+    card = cards[card_id]
+    
+    # Выдаем карточку
+    if card_id not in user.cards:
+        user.cards[card_id] = 1
+    else:
+        user.cards[card_id] += 1
+    
+    user.opened_packs += 1
+    update_user_interaction(user)
+    save_data()
+    
+    await message.answer(
+        f"✅ <b>Карточка успешно выдана!</b>\n\n"
+        f"👤 <b>Пользователь:</b> @{target_username}\n"
+        f"🎴 <b>Карточка:</b> {card.name}\n"
+        f"📊 <b>Редкость:</b> {get_rarity_name(card.rarity)}\n"
+        f"🆔 <b>ID карточки:</b> <code>{card_id}</code>\n"
+        f"📈 <b>Теперь у пользователя:</b> {user.cards[card_id]} шт.\n\n"
+        f"<i>Карточка добавлена в инвентарь пользователя.</i>"
+    )
+    
+    # Уведомляем пользователя
+    try:
+        await bot.send_message(
+            target_user_id,
+            f"🎁 <b>Вам выдана карточка администратором!</b>\n\n"
+            f"🎴 <b>Карточка:</b> {card.name}\n"
+            f"📊 <b>Редкость:</b> {get_rarity_name(card.rarity)}\n\n"
+            f"Проверьте свой инвентарь! 🎉"
+        )
+        logger.info(f"✅ Уведомление о выдаче карточки отправлено пользователю {target_user_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки уведомления пользователю {target_user_id}: {e}")
+    
+    await state.clear()
 
 @dp.callback_query(lambda c: c.data == "admin_broadcast")
 async def admin_broadcast_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -5152,7 +5394,6 @@ async def add_exclusive_command(message: types.Message):
 
 @dp.callback_query(lambda c: c.data.startswith("view_trade_"))
 async def view_trade_handler(callback: types.CallbackQuery):
-    """Просмотр конкретного обмена"""
     trade_id = callback.data.replace("view_trade_", "")
     
     if trade_id not in trades:
@@ -5196,7 +5437,6 @@ async def view_trade_handler(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("accept_trade_"))
 async def accept_trade_handler(callback: types.CallbackQuery):
-    """Принятие обмена"""
     trade_id = callback.data.replace("accept_trade_", "")
     
     if trade_id not in trades:
@@ -5205,72 +5445,57 @@ async def accept_trade_handler(callback: types.CallbackQuery):
     
     trade = trades[trade_id]
     
-    # Проверяем, что пользователь является получателем
     if callback.from_user.id != trade['to_user']:
         await callback.answer("❌ Вы не можете принять этот обмен", show_alert=True)
         return
     
     user = get_or_create_user(callback.from_user.id)
     
-    # Проверяем кулдаун обменов
     can_trade_now, remaining = can_trade(user)
     if not can_trade_now:
         await callback.answer(f"⏰ Вы можете принимать обмены через {remaining}", show_alert=True)
         return
     
-    # Проверяем, что у отправителя еще есть карточки
     from_user = get_or_create_user(trade['from_user'])
     for card_id in trade['cards']:
         if from_user.cards.get(card_id, 0) <= 0:
             await callback.answer("❌ У отправителя больше нет этих карточек", show_alert=True)
             return
     
-    # Выбираем карточку для обмена (пока простой вариант - первую карточку отправителя)
-    # В будущем можно добавить выбор карточки
     user_cards = [card_id for card_id, quantity in user.cards.items() if quantity > 0]
     if not user_cards:
         await callback.answer("❌ У вас нет карточек для обмена", show_alert=True)
         return
     
-    # Выбираем случайную карточку у получателя
     receiver_card = random.choice(user_cards)
     
-    # Обновляем кулдаун у обоих пользователей
     user.last_trade_time = datetime.now().isoformat()
     from_user.last_trade_time = datetime.now().isoformat()
     
-    # Обмениваем карточки
     for card_id in trade['cards']:
-        # Уменьшаем у отправителя
         if card_id in from_user.cards and from_user.cards[card_id] > 0:
             from_user.cards[card_id] -= 1
             if from_user.cards[card_id] == 0:
                 del from_user.cards[card_id]
         
-        # Добавляем получателю
         user.cards[card_id] = user.cards.get(card_id, 0) + 1
     
-    # Уменьшаем у получателя выбранную карточку
     if receiver_card in user.cards and user.cards[receiver_card] > 0:
         user.cards[receiver_card] -= 1
         if user.cards[receiver_card] == 0:
             del user.cards[receiver_card]
         
-        # Добавляем отправителю
         from_user.cards[receiver_card] = from_user.cards.get(receiver_card, 0) + 1
     
-    # Обновляем статус обмена
     trade['status'] = 'completed'
     trade['receiver_card'] = receiver_card
     trade['completed_at'] = datetime.now().isoformat()
     
-    # Добавляем опыт обоим пользователям
     add_experience(user, 'trade_complete')
     add_experience(from_user, 'trade_complete')
     
     save_data()
     
-    # Уведомляем обоих пользователей
     try:
         await bot.send_message(
             from_user.user_id,
@@ -5296,7 +5521,6 @@ async def accept_trade_handler(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("reject_trade_"))
 async def reject_trade_handler(callback: types.CallbackQuery):
-    """Отклонение обмена"""
     trade_id = callback.data.replace("reject_trade_", "")
     
     if trade_id not in trades:
@@ -5305,16 +5529,13 @@ async def reject_trade_handler(callback: types.CallbackQuery):
     
     trade = trades[trade_id]
     
-    # Проверяем, что пользователь является получателем
     if callback.from_user.id != trade['to_user']:
         await callback.answer("❌ Вы не можете отклонить этот обмен", show_alert=True)
         return
     
-    # Обновляем статус обмена
     trade['status'] = 'rejected'
     trade['completed_at'] = datetime.now().isoformat()
     
-    # Уведомляем отправителя
     from_user = get_or_create_user(trade['from_user'])
     try:
         await bot.send_message(
