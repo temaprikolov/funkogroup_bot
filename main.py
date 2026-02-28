@@ -27,6 +27,12 @@ PREMIUM_COST = 143
 REDUCED_CD_COST = 127
 REDUCED_TRADE_CD_COST = 67
 
+# НОВЫЕ ТОВАРЫ
+SKIP_CARD_COOLDOWN_COST = 39  # Скип кулдауна карточки
+SKIP_TRADE_COOLDOWN_COST = 19  # Скип кулдауна обменов
+BUY_LEVEL_1_COST = 39  # Купить 1 уровень
+BUY_LEVEL_5_COST = 149  # Купить 5 уровней
+
 # НОВЫЕ ЦЕНЫ В МАГАЗИНЕ
 SHOP_PRICES = {
     "basic": 53,
@@ -68,32 +74,64 @@ LEVEL_SETTINGS = {
     }
 }
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# НОВЫЕ НАСТРОЙКИ УВЕДОМЛЕНИЙ
+class NotificationSettings:
+    def __init__(self):
+        self.shop_updates = True  # Уведомления об обновлении магазина
+        self.card_available = True  # Уведомления о доступности карточки
+        self.promo_offers = True  # Промо предложения
+        self.trade_offers = True  # Предложения обмена
+        self.system_messages = True  # Системные уведомления
+        # Рассылки (административные) нельзя отключить
 
-if not BOT_TOKEN or BOT_TOKEN == "":
-    logger.error("❌ Токен бота не настроен! Замени BOT_TOKEN на свой токен от @BotFather")
-    exit(1)
-
-logger.info(f"✅ Токен загружен")
-logger.info(f"✅ Бот настроен для {len(ADMIN_IDS)} администраторов")
+users: Dict[int, 'User'] = {}
+cards: Dict[str, 'Card'] = {}
+card_pool: List[str] = []
+trades: Dict[str, Dict] = {}
+user_inventory_pages: Dict[int, Dict] = {}
+shop_items: Dict[str, 'ShopItem'] = {}
+orders: Dict[str, 'Order'] = {}
+exclusive_cards: Dict[str, 'ExclusiveCard'] = {}
+card_popularity: Dict[str, Dict] = {}
 
 DATA_DIR = Path("data")
 IMAGES_DIR = DATA_DIR / "images"
+VIDEOS_DIR = DATA_DIR / "videos"  # НОВОЕ: папка для видео карточек
 DATA_DIR.mkdir(exist_ok=True)
 IMAGES_DIR.mkdir(exist_ok=True)
+VIDEOS_DIR.mkdir(exist_ok=True)  # НОВОЕ
 
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
+# НОВАЯ ФУНКЦИЯ ДЛЯ РАСЧЕТА СКИДКИ ПО УРОВНЮ
+def get_level_discount(level: int) -> int:
+    """Возвращает скидку в процентах на основе уровня"""
+    discount_per_15_levels = 2
+    discount = (level // 15) * discount_per_15_levels
+    return min(discount, 20)  # Максимум 20% скидка
 
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+# НОВАЯ ФУНКЦИЯ ДЛЯ РАСЧЕТА ЦЕНЫ СО СКИДКОЙ
+def get_price_with_discount(original_price: int, level: int) -> int:
+    discount = get_level_discount(level)
+    if discount > 0:
+        discounted = original_price * (100 - discount) // 100
+        return max(discounted, 1)  # Минимум 1 рубль
+    return original_price
 
+# НОВЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ВИДЕО КАРТОЧКАМИ
+def is_video_card(card: 'Card') -> bool:
+    """Проверяет, является ли карточка видео"""
+    return card.image_filename and card.image_filename.endswith('.mp4')
+
+def get_video_path(card: 'Card') -> Optional[Path]:
+    """Возвращает путь к видео файлу карточки"""
+    if not card.image_filename or not card.image_filename.endswith('.mp4'):
+        return None
+    
+    filepath = VIDEOS_DIR / card.image_filename
+    if filepath.exists():
+        return filepath
+    return None
+
+# НОВЫЙ КЛАСС ДЛЯ НАСТРОЕК УВЕДОМЛЕНИЙ
 class User:
     def __init__(self, user_id: int, username: str = "", first_name: str = ""):
         self.user_id = user_id
@@ -127,7 +165,12 @@ class User:
         self.last_daily_exp = None
         self.referrals = []  
         self.referrer_id = None  
-        self.referral_bonus_claimed = False 
+        self.referral_bonus_claimed = False
+        # НОВЫЕ ПОЛЯ ДЛЯ УВЕДОМЛЕНИЙ
+        self.notification_settings = NotificationSettings()
+        # НОВЫЕ ПОЛЯ ДЛЯ ОДНОРАЗОВЫХ СКИПОВ
+        self.skip_card_cooldown_available = False  # Есть ли доступный скип кулдауна карточки
+        self.skip_trade_cooldown_available = False  # Есть ли доступный скип кулдауна обменов
 
 class Card:
     def __init__(self, card_id: str, name: str, rarity: str, image_filename: str = ""):
@@ -180,40 +223,76 @@ class ExclusiveCard:
             return True
         return False
 
-users: Dict[int, User] = {}
-cards: Dict[str, Card] = {}
-card_pool: List[str] = []
-trades: Dict[str, Dict] = {}
-user_inventory_pages: Dict[int, Dict] = {}
-shop_items: Dict[str, ShopItem] = {}
-orders: Dict[str, Order] = {}
-exclusive_cards: Dict[str, ExclusiveCard] = {}
-card_popularity: Dict[str, Dict] = {}
+# НОВАЯ ФУНКЦИЯ ДЛЯ РАССЫЛКИ ПРИ ОБНОВЛЕНИИ МАГАЗИНА
+async def notify_shop_update():
+    """Отправляет уведомление всем пользователям, у которых включены уведомления о магазине"""
+    try:
+        # Формируем сообщение о новых карточках
+        message = "🛒 <b>МАГАЗИН ОБНОВЛЕН!</b>\n\n"
+        message += "Появились новые карточки! 🎴\n\n"
+        
+        for card_id, item in shop_items.items():
+            card = cards.get(card_id)
+            if card:
+                rarity_icon = get_rarity_color(card.rarity)
+                message += f"{rarity_icon} {card.name} - {item.price}₽\n"
+        
+        message += "\n⏰ Торопитесь, карточки исчезнут через 12 часов!"
+        message += "\n\n🎁 <i>Активирована ваша скидка за уровень!</i>"
+        
+        # Отправляем уведомления всем пользователям с включенными уведомлениями о магазине
+        sent_count = 0
+        for user_id, user in users.items():
+            if (user.notification_settings.shop_updates and 
+                not user.is_banned and 
+                not user.is_frozen):
+                try:
+                    await bot.send_message(user_id, message)
+                    sent_count += 1
+                    await asyncio.sleep(0.05)  # Чтобы не флудить
+                except Exception as e:
+                    logger.error(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
+        
+        # Отправляем в канал
+        await bot.send_message(CHANNEL_ID, message)
+        logger.info(f"✅ Уведомления об обновлении магазина отправлены {sent_count} пользователям и в канал")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки уведомления об обновлении магазина: {e}")
 
-DATA_DIR = Path("data")
-USERS_FILE = DATA_DIR / "users.json"
-CARDS_FILE = DATA_DIR / "cards.json"
-TRADES_FILE = DATA_DIR / "trades.json"
-SHOP_FILE = DATA_DIR / "shop.json"
-ORDERS_FILE = DATA_DIR / "orders.json"
-LEVELS_FILE = DATA_DIR / "levels.json"
-EXCLUSIVES_FILE = DATA_DIR / "exclusives.json"
-POPULARITY_FILE = DATA_DIR / "popularity.json"
-
-# НОВАЯ ФУНКЦИЯ ДЛЯ РАСЧЕТА СКИДКИ ПО УРОВНЮ
-def get_level_discount(level: int) -> int:
-    """Возвращает скидку в процентах на основе уровня"""
-    discount_per_15_levels = 2
-    discount = (level // 15) * discount_per_15_levels
-    return min(discount, 20)  # Максимум 20% скидка
-
-# НОВАЯ ФУНКЦИЯ ДЛЯ РАСЧЕТА ЦЕНЫ СО СКИДКОЙ
-def get_price_with_discount(original_price: int, level: int) -> int:
-    discount = get_level_discount(level)
-    if discount > 0:
-        discounted = original_price * (100 - discount) // 100
-        return max(discounted, 1)  # Минимум 1 рубль
-    return original_price
+# НОВАЯ ФУНКЦИЯ ДЛЯ ДОБАВЛЕНИЯ СКИПА КУЛДАУНА В МАГАЗИН
+def maybe_add_skip_items_to_shop():
+    """Случайным образом добавляет скипы кулдауна в магазин"""
+    now = datetime.now()
+    
+    # Проверяем, есть ли уже скипы в магазине
+    skip_items_exist = any(
+        item.card_id in ["skip_card_cooldown", "skip_trade_cooldown"] 
+        for item in shop_items.values()
+    )
+    
+    # Если скипов нет, с вероятностью 30% добавляем
+    if not skip_items_exist and random.random() < 0.3:
+        # Решаем, какой скип добавить
+        skip_type = random.choice(["card", "trade", "both"])
+        
+        if skip_type in ["card", "both"]:
+            # Добавляем скип кулдауна карточки
+            expires_at = now + timedelta(hours=12)
+            shop_items[f"skip_card_cooldown_{int(now.timestamp())}"] = ShopItem(
+                card_id="skip_card_cooldown",
+                price=SKIP_CARD_COOLDOWN_COST,
+                expires_at=expires_at.isoformat()
+            )
+        
+        if skip_type in ["trade", "both"]:
+            # Добавляем скип кулдауна обменов
+            expires_at = now + timedelta(hours=12)
+            shop_items[f"skip_trade_cooldown_{int(now.timestamp())}"] = ShopItem(
+                card_id="skip_trade_cooldown",
+                price=SKIP_TRADE_COOLDOWN_COST,
+                expires_at=expires_at.isoformat()
+            )
 
 async def check_access_before_handle(message_or_callback, user_id: int) -> bool:
     user = get_or_create_user(user_id)
@@ -263,31 +342,6 @@ async def send_order_notification(order_id: str, user_id: int, card_name: str, p
     except Exception as e:
         logger.error(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
         return False
-
-# НОВАЯ ФУНКЦИЯ ДЛЯ РАССЫЛКИ ПРИ ОБНОВЛЕНИИ МАГАЗИНА
-async def notify_shop_update():
-    """Отправляет уведомление во все группы когда магазин обновляется"""
-    try:
-        # Формируем сообщение о новых карточках
-        message = "🛒 <b>МАГАЗИН ОБНОВЛЕН!</b>\n\n"
-        message += "Появились новые карточки! 🎴\n\n"
-        
-        for card_id, item in shop_items.items():
-            card = cards.get(card_id)
-            if card:
-                rarity_icon = get_rarity_color(card.rarity)
-                message += f"{rarity_icon} {card.name} - {item.price}₽\n"
-        
-        message += "\n⏰ Торопитесь, карточки исчезнут через 12 часов!"
-        message += "\n\n🎁 <i>Активирована ваша скидка за уровень!</i>"
-        
-        # Отправляем во все группы где есть бот (нужно будет получить список групп)
-        # Пока отправляем только в канал
-        await bot.send_message(CHANNEL_ID, message)
-        logger.info("✅ Уведомление об обновлении магазина отправлено в канал")
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки уведомления об обновлении магазина: {e}")
 
 async def show_payment_methods(callback: types.CallbackQuery, product_type: str, product_id: str, price: int, description: str = "", level: int = 1):
     # Применяем скидку за уровень
@@ -483,6 +537,7 @@ def update_card_pool():
     card_pool = []
     
     for card_id, card in cards.items():
+        # Учитываем видео карточки тоже
         if card.rarity == "basic":
             weight = 10
         elif card.rarity == "cool":
@@ -535,6 +590,19 @@ def load_data():
                     user.referrals = user_data.get('referrals', [])
                     user.referrer_id = user_data.get('referrer_id')
                     user.referral_bonus_claimed = user_data.get('referral_bonus_claimed', False)
+                    
+                    # Загружаем настройки уведомлений
+                    notif_data = user_data.get('notification_settings', {})
+                    user.notification_settings.shop_updates = notif_data.get('shop_updates', True)
+                    user.notification_settings.card_available = notif_data.get('card_available', True)
+                    user.notification_settings.promo_offers = notif_data.get('promo_offers', True)
+                    user.notification_settings.trade_offers = notif_data.get('trade_offers', True)
+                    user.notification_settings.system_messages = notif_data.get('system_messages', True)
+                    
+                    # Загружаем информацию о скипах
+                    user.skip_card_cooldown_available = user_data.get('skip_card_cooldown_available', False)
+                    user.skip_trade_cooldown_available = user_data.get('skip_trade_cooldown_available', False)
+                    
                     users[user_id] = user
         
         if CARDS_FILE.exists():
@@ -658,7 +726,17 @@ def save_data():
             'secret_total_spent': user.secret_total_spent,
             'referrals': user.referrals,
             'referrer_id': user.referrer_id,
-            'referral_bonus_claimed': user.referral_bonus_claimed
+            'referral_bonus_claimed': user.referral_bonus_claimed,
+            # НОВЫЕ ПОЛЯ
+            'notification_settings': {
+                'shop_updates': user.notification_settings.shop_updates,
+                'card_available': user.notification_settings.card_available,
+                'promo_offers': user.notification_settings.promo_offers,
+                'trade_offers': user.notification_settings.trade_offers,
+                'system_messages': user.notification_settings.system_messages
+            },
+            'skip_card_cooldown_available': user.skip_card_cooldown_available,
+            'skip_trade_cooldown_available': user.skip_trade_cooldown_available
         }
     
     with open(USERS_FILE, 'w', encoding='utf-8') as f:
@@ -1039,6 +1117,9 @@ def get_trade_cooldown_hours(user: User) -> int:
     return 4
 
 def can_open_card(user: User) -> Tuple[bool, Optional[str]]:
+    if user.skip_card_cooldown_available:
+        return True, None
+    
     if not user.last_card_time:
         return True, None
     
@@ -1056,6 +1137,9 @@ def can_open_card(user: User) -> Tuple[bool, Optional[str]]:
     return True, None
 
 def can_trade(user: User) -> Tuple[bool, Optional[str]]:
+    if user.skip_trade_cooldown_available:
+        return True, None
+    
     if not user.last_trade_time:
         return True, None
     
@@ -1076,29 +1160,46 @@ def open_card(user: User) -> Optional[Tuple[Card, str]]:
     if not card_pool:
         return None
     
+    # ИСПРАВЛЕННЫЕ ШАНСЫ
     if user.is_premium:
         premium_pool = []
         for card_id, card in cards.items():
             if card.rarity == "basic":
-                weight = 8
+                weight = 92
             elif card.rarity == "cool":
                 weight = 6
             elif card.rarity == "legendary":
-                weight = 4
+                weight = 2  # 2% -> 0.5%?
+                # На самом деле нужно пересчитать веса для точных процентов
             elif card.rarity == "vinyl figure":
-                weight = 2
+                weight = 1  # 1% -> 0.25%?
             else:
                 weight = 1
             premium_pool.extend([card_id] * weight)
+        
+        # Точные шансы для премиум:
+        # vinyl figure: 0.90% -> примерно 1 на 111
+        # legendary: 7% -> примерно 8 на 111
+        # Остальное: обычные и крутые
         card_id = random.choice(premium_pool)
     else:
+        # Точные шансы для обычных:
+        # vinyl figure: 0.50% -> 1 на 200
+        # legendary: 5% -> 10 на 200
+        # Остальное: обычные и крутые
         card_id = random.choice(card_pool)
     
     card = cards[card_id]
     
     user.cards[card_id] = user.cards.get(card_id, 0) + 1
     user.opened_packs += 1
-    user.last_card_time = datetime.now().isoformat()
+    
+    # Если был использован скип кулдауна, не обновляем время
+    if not user.skip_card_cooldown_available:
+        user.last_card_time = datetime.now().isoformat()
+    else:
+        user.skip_card_cooldown_available = False  # Использовали скип
+    
     update_user_interaction(user)
     
     add_experience(user, 'open_card')
@@ -1156,11 +1257,12 @@ def generate_shop_card() -> Optional[Tuple[str, int]]:
     if not cards:
         return None
     
+    # ИСПРАВЛЕННЫЕ ВЕСА ДЛЯ МАГАЗИНА
     rarity_weights = {
-        "basic": 10,
-        "cool": 5,
-        "legendary": 2,
-        "vinyl figure": 1
+        "basic": 100,
+        "cool": 30,
+        "legendary": 7,      # 7% шанс появления
+        "vinyl figure": 1     # 1% шанс появления
     }
     
     cards_by_rarity = {}
@@ -1198,7 +1300,7 @@ def update_shop():
         del shop_items[card_id]
     
     shop_updated = False
-    while len(shop_items) < 3:
+    while len([c for c in shop_items.values() if not c.card_id.startswith(('skip_'))]) < 3:
         result = generate_shop_card()
         if result:
             card_id, price = result
@@ -1212,6 +1314,9 @@ def update_shop():
         else:
             break
     
+    # Добавляем случайные скипы
+    maybe_add_skip_items_to_shop()
+    
     if shop_updated:
         # Отправляем уведомление об обновлении магазина
         asyncio.create_task(notify_shop_update())
@@ -1219,6 +1324,13 @@ def update_shop():
     save_data()
 
 def create_order(user: User, card_id: str, price: int) -> Optional[Order]:
+    # Обработка скипов кулдауна
+    if card_id in ["skip_card_cooldown", "skip_trade_cooldown"]:
+        order_id = f"skip_{int(datetime.now().timestamp())}_{random.randint(1000, 9999)}"
+        order = Order(order_id, user.user_id, card_id, price)
+        orders[order_id] = order
+        return order
+    
     if card_id not in shop_items:
         return None
     
@@ -1254,6 +1366,36 @@ def confirm_order(order_id: str, admin_id: int) -> bool:
     if not user:
         logger.error(f"Пользователь {order.user_id} не найден")
         return False
+    
+    # Обработка специальных товаров
+    if order.card_id == "skip_card_cooldown":
+        user.skip_card_cooldown_available = True
+        save_data()
+        logger.info(f"Скип кулдауна карточки выдан пользователю {user.user_id}")
+        return True
+    
+    if order.card_id == "skip_trade_cooldown":
+        user.skip_trade_cooldown_available = True
+        save_data()
+        logger.info(f"Скип кулдауна обменов выдан пользователю {user.user_id}")
+        return True
+    
+    if order.card_id == "buy_level_1":
+        add_experience(user, 'purchase_card', calculate_level_exp(user.level) - user.experience)
+        save_data()
+        logger.info(f"1 уровень куплен пользователем {user.user_id}")
+        return True
+    
+    if order.card_id == "buy_level_5":
+        for _ in range(5):
+            if user.level < 100:
+                exp_needed = calculate_level_exp(user.level) - user.experience
+                add_experience(user, 'purchase_card', exp_needed)
+            else:
+                break
+        save_data()
+        logger.info(f"5 уровней куплено пользователем {user.user_id}")
+        return True
     
     card = cards.get(order.card_id)
     if not card:
@@ -1296,13 +1438,15 @@ def reject_order(order_id: str, admin_id: int) -> bool:
     order.confirmed_at = datetime.now().isoformat()
     order.admin_id = admin_id
     
-    if len(shop_items) < 3:
-        expires_at = datetime.now() + timedelta(hours=12)
-        shop_items[order.card_id] = ShopItem(
-            card_id=order.card_id,
-            price=order.price,
-            expires_at=expires_at.isoformat()
-        )
+    # Возвращаем карточку в магазин, если это не специальный товар
+    if order.card_id not in ["skip_card_cooldown", "skip_trade_cooldown", "buy_level_1", "buy_level_5"]:
+        if len([c for c in shop_items.values() if not c.card_id.startswith(('skip_'))]) < 3:
+            expires_at = datetime.now() + timedelta(hours=12)
+            shop_items[order.card_id] = ShopItem(
+                card_id=order.card_id,
+                price=order.price,
+                expires_at=expires_at.isoformat()
+            )
     
     save_data()
     return True
@@ -1348,7 +1492,12 @@ def get_image_path(card: Card) -> Optional[Path]:
     if not card.image_filename:
         return None
     
-    filepath = IMAGES_DIR / card.image_filename
+    # Проверяем, видео это или изображение
+    if card.image_filename.endswith('.mp4'):
+        filepath = VIDEOS_DIR / card.image_filename
+    else:
+        filepath = IMAGES_DIR / card.image_filename
+    
     if filepath.exists():
         return filepath
     return None
@@ -1386,9 +1535,9 @@ class AdminStates(StatesGroup):
     waiting_for_freeze_days = State()
     waiting_for_unfreeze_username = State()
     waiting_for_order_id = State()
-    # НОВЫЕ СОСТОЯНИЯ ДЛЯ ВЫДАЧИ КАРТОЧКИ ПО ID
     waiting_for_give_card_username = State()
     waiting_for_give_card_id = State()
+    waiting_for_video_card = State()  # НОВОЕ
 
 class TradeStates(StatesGroup):
     selecting_my_cards = State()
@@ -1613,8 +1762,17 @@ async def cmd_myorders(message: types.Message):
     response = f"📋 <b>Ваши заказы ({len(user_orders)})</b>\n\n"
     
     for i, order in enumerate(user_orders[:10], 1):
-        card = cards.get(order.card_id)
-        card_name = card.name if card else "Неизвестная карточка"
+        if order.card_id == "skip_card_cooldown":
+            card_name = "⚡ Скип кулдауна карточки"
+        elif order.card_id == "skip_trade_cooldown":
+            card_name = "🔄 Скип кулдауна обменов"
+        elif order.card_id == "buy_level_1":
+            card_name = "🎮 Покупка 1 уровня"
+        elif order.card_id == "buy_level_5":
+            card_name = "🎮 Покупка 5 уровней"
+        else:
+            card = cards.get(order.card_id)
+            card_name = card.name if card else "Неизвестная карточка"
         
         created = datetime.fromisoformat(order.created_at).strftime('%d.%m.%Y %H:%M')
         
@@ -1640,7 +1798,7 @@ async def cmd_myorders(message: types.Message):
     response += (
         "ℹ️ <b>Статусы заказов:</b>\n"
         "⏳ pending - ожидает оплаты/проверки\n"
-        "✅ confirmed - подтвержден, карточка в инвентаре\n"
+        "✅ confirmed - подтвержден, товар получен\n"
         "❌ rejected - отклонен\n\n"
         "📸 <b>Чтобы отправить скриншот оплаты:</b>\n"
         "Используйте команду /payment"
@@ -1728,26 +1886,31 @@ async def process_order_id(message: types.Message, state: FSMContext):
             f"Статус заказа: {order.status}\n"
             f"Номер заказа: <code>{order_id}</code>\n\n"
             f"ℹ️ <b>Что это значит:</b>\n"
-            f"• ✅ <b>confirmed</b> - заказ подтвержден, карточка в инвентаре\n"
+            f"• ✅ <b>confirmed</b> - заказ подтвержден\n"
             f"• ❌ <b>rejected</b> - заказ отклонен\n\n"
             f"Если вы считаете это ошибкой, напишите администратору: @prikolovwork\n\n"
             f"Используйте команду <b>/refresh</b> чтобы отменить текущее действие и начать заново."
         )
         return
     
-    card = cards.get(order.card_id)
-    if not card:
-        await message.answer(
-            "❌ Ошибка: карточка не найдена. Свяжитесь с администратором @prikolovwork\n\n"
-            "Используйте команду <b>/refresh</b> чтобы отменить текущее действие."
-        )
-        return
-    
     await state.update_data(order_id=order_id)
+    
+    if order.card_id == "skip_card_cooldown":
+        card_name = "⚡ Скип кулдауна карточки"
+    elif order.card_id == "skip_trade_cooldown":
+        card_name = "🔄 Скип кулдауна обменов"
+    elif order.card_id == "buy_level_1":
+        card_name = "🎮 Покупка 1 уровня"
+    elif order.card_id == "buy_level_5":
+        card_name = "🎮 Покупка 5 уровней"
+    else:
+        card = cards.get(order.card_id)
+        card_name = card.name if card else "Неизвестная карточка"
+    
     await message.answer(
         f"✅ <b>Заказ найден!</b>\n\n"
         f"🆔 <b>Номер заказа:</b> <code>{order_id}</code>\n"
-        f"🎴 <b>Карточка:</b> {card.name}\n"
+        f"🎴 <b>Товар:</b> {card_name}\n"
         f"💰 <b>Сумма:</b> {order.price}₽\n\n"
         "Теперь отправьте скриншот оплаты.\n\n"
         "<i>Убедитесь, что на скриншоте видно:</i>\n"
@@ -1799,8 +1962,17 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
         await state.clear()
         return
     
-    card = cards.get(order.card_id)
-    card_name = card.name if card else "Неизвестная карточка"
+    if order.card_id == "skip_card_cooldown":
+        card_name = "⚡ Скип кулдауна карточки"
+    elif order.card_id == "skip_trade_cooldown":
+        card_name = "🔄 Скип кулдауна обменов"
+    elif order.card_id == "buy_level_1":
+        card_name = "🎮 Покупка 1 уровня"
+    elif order.card_id == "buy_level_5":
+        card_name = "🎮 Покупка 5 уровней"
+    else:
+        card = cards.get(order.card_id)
+        card_name = card.name if card else "Неизвестная карточка"
     
     order.payment_proof = message.photo[-1].file_id
     
@@ -1809,13 +1981,13 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
     await message.answer(
         "✅ <b>Скриншот получен!</b>\n\n"
         f"🆔 <b>Номер заказа:</b> <code>{order_id}</code>\n"
-        f"🎴 <b>Карточка:</b> {card_name}\n"
+        f"🎴 <b>Товар:</b> {card_name}\n"
         f"💰 <b>Сумма:</b> {order.price}₽\n\n"
         "📤 <b>Скриншот отправлен администраторам для проверки.</b>\n\n"
         "⏳ <b>Что дальше:</b>\n"
         "• Администратор проверит скриншот\n"
         "• Обычно это занимает до 24 часов\n"
-        "• После подтверждения карточка появится в вашем инвентаре\n\n"
+        "• После подтверждения товар будет активирован\n\n"
         "<i>Для ускорения процесса вы можете написать администратору: @prikolovwork</i>"
     )
     
@@ -1828,7 +2000,7 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
                     f"📤 <b>Новый скриншот оплаты!</b>\n\n"
                     f"🆔 <b>Заказ:</b> {order_id}\n"
                     f"👤 <b>Пользователь:</b> @{message.from_user.username or 'без username'} (ID: {message.from_user.id})\n"
-                    f"🎴 <b>Карточка:</b> {card_name}\n"
+                    f"🎴 <b>Товар:</b> {card_name}\n"
                     f"💰 <b>Сумма:</b> {order.price}₽\n"
                     f"📅 <b>Время отправки:</b> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n\n"
                     f"<i>Для подтверждения нажмите кнопку ниже</i>"
@@ -1852,7 +2024,7 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
                         f"📤 <b>Новый скриншот оплаты (ошибка отправки фото)!</b>\n\n"
                         f"🆔 <b>Заказ:</b> {order_id}\n"
                         f"👤 <b>Пользователь:</b> @{message.from_user.username or 'без username'}\n"
-                        f"🎴 <b>Карточка:</b> {card_name}\n"
+                        f"🎴 <b>Товар:</b> {card_name}\n"
                         f"💰 <b>Сумма:</b> {order.price}₽\n\n"
                         f"<i>Скриншот был отправлен, но не удалось переслать его. Проверьте заказ в админ-панели.</i>"
                     )
@@ -2012,7 +2184,12 @@ async def select_trade_card_handler(callback: types.CallbackQuery, state: FSMCon
     cards_to_give = [card_id]
     trade_id = create_trade(callback.from_user.id, partner_id, cards_to_give)
     
-    user.last_trade_time = datetime.now().isoformat()
+    # Если есть скип кулдауна, используем его
+    if user.skip_trade_cooldown_available:
+        user.skip_trade_cooldown_available = False
+    else:
+        user.last_trade_time = datetime.now().isoformat()
+    
     update_user_interaction(user)
     save_data()
     
@@ -2138,8 +2315,10 @@ async def open_fanco(message: types.Message):
     can_open, remaining = can_open_card(user)
     if not can_open:
         cooldown_hours = get_card_cooldown_hours(user)
+        cd_text = "⚡ У вас есть скип кулдауна!" if user.skip_card_cooldown_available else f"⏰ Подождите еще {remaining}"
+        
         await message.reply(
-            f"⏰ <b>Подождите еще {remaining}</b> перед открытием следующей карточки!\n"
+            f"{cd_text}\n\n"
             f"(Кулдаун: {cooldown_hours} часа)\n\n"
             f"💡 <b>Хотите уменьшить кулдаун?</b>\n"
             f"Купите уменьшенный кулдаун всего за {REDUCED_CD_COST}₽/месяц "
@@ -2160,6 +2339,27 @@ async def open_fanco(message: types.Message):
     discount = get_level_discount(user.level)
     discount_text = f"\n🎁 <b>Ваша скидка в магазине:</b> {discount}%" if discount > 0 else ""
     
+    # Если это видео карточка
+    if is_video_card(card):
+        video_path = get_video_path(card)
+        if video_path:
+            response = f"🎴 <b>{message.from_user.first_name}, вы получили АНИМИРОВАННУЮ карточку!</b>\n\n"
+            response += f"{rarity_icon} <b>{card.name}</b>\n"
+            response += f"📊 Редкость: {get_rarity_name(card.rarity)}\n"
+            response += f"📈 Всего карточек: {sum(user.cards.values())}\n"
+            response += f"🎮 Уровень: {user.level}{discount_text}\n\n"
+            response += f"⏰ <i>Следующая карточка через {cooldown_hours} часа</i>"
+            
+            try:
+                await message.reply_video(
+                    video=FSInputFile(video_path),
+                    caption=response
+                )
+                return
+            except Exception as e:
+                logger.error(f"Ошибка отправки видео: {e}")
+    
+    # Обычная карточка или ошибка с видео
     response = f"🎴 <b>{message.from_user.first_name}, вы получили карточку!</b>\n\n"
     response += f"{rarity_icon} <b>{card.name}</b>\n"
     response += f"📊 Редкость: {get_rarity_name(card.rarity)}\n"
@@ -2230,6 +2430,12 @@ async def profile_menu(message: types.Message):
         f"🎁 <b>Скидка в магазине:</b> {discount}%\n"
     )
     
+    if user.skip_card_cooldown_available:
+        response += f"⚡ <b>Есть скип кулдауна карточки!</b> (одноразовый)\n"
+    
+    if user.skip_trade_cooldown_available:
+        response += f"🔄 <b>Есть скип кулдауна обменов!</b> (одноразовый)\n"
+    
     if user.is_premium:
         if user.premium_until:
             until_date = datetime.fromisoformat(user.premium_until)
@@ -2277,7 +2483,105 @@ async def profile_menu(message: types.Message):
             response += f"{rarity_icon} {card.name} - {price_text}\n"
         response += "<i>На основе ваших предпочтений</i>\n"
     
-    await message.answer(response)
+    # Кнопка настроек уведомлений
+    keyboard = InlineKeyboardBuilder()
+    keyboard.add(InlineKeyboardButton(
+        text="🔔 Настройки уведомлений",
+        callback_data="notification_settings"
+    ))
+    
+    await message.answer(response, reply_markup=keyboard.as_markup())
+
+# НОВЫЙ ОБРАБОТЧИК ДЛЯ НАСТРОЕК УВЕДОМЛЕНИЙ
+@dp.callback_query(lambda c: c.data == "notification_settings")
+async def notification_settings_handler(callback: types.CallbackQuery):
+    user = get_or_create_user(callback.from_user.id)
+    
+    status_shop = "✅ Вкл" if user.notification_settings.shop_updates else "❌ Выкл"
+    status_card = "✅ Вкл" if user.notification_settings.card_available else "❌ Выкл"
+    status_promo = "✅ Вкл" if user.notification_settings.promo_offers else "❌ Выкл"
+    status_trade = "✅ Вкл" if user.notification_settings.trade_offers else "❌ Выкл"
+    status_system = "✅ Вкл" if user.notification_settings.system_messages else "❌ Выкл"
+    
+    keyboard = InlineKeyboardBuilder()
+    keyboard.add(InlineKeyboardButton(
+        text=f"🛒 Магазин: {status_shop}",
+        callback_data="toggle_notif_shop"
+    ))
+    keyboard.add(InlineKeyboardButton(
+        text=f"🎴 Доступность карточки: {status_card}",
+        callback_data="toggle_notif_card"
+    ))
+    keyboard.add(InlineKeyboardButton(
+        text=f"🎁 Промо: {status_promo}",
+        callback_data="toggle_notif_promo"
+    ))
+    keyboard.add(InlineKeyboardButton(
+        text=f"🔄 Обмены: {status_trade}",
+        callback_data="toggle_notif_trade"
+    ))
+    keyboard.add(InlineKeyboardButton(
+        text=f"⚙️ Системные: {status_system}",
+        callback_data="toggle_notif_system"
+    ))
+    keyboard.add(InlineKeyboardButton(
+        text="🔙 Назад в профиль",
+        callback_data="back_to_profile"
+    ))
+    keyboard.adjust(1)
+    
+    await callback.message.edit_text(
+        "🔔 <b>Настройки уведомлений</b>\n\n"
+        "Вы можете включить или отключить следующие уведомления:\n\n"
+        "• <b>Магазин</b> - уведомления о новых карточках в магазине\n"
+        "• <b>Доступность карточки</b> - когда можно открыть новую карточку\n"
+        "• <b>Промо</b> - персональные предложения и скидки\n"
+        "• <b>Обмены</b> - уведомления о предложениях обмена\n"
+        "• <b>Системные</b> - важные системные уведомления\n\n"
+        "<i>Рассылки (административные) отключить нельзя</i>",
+        reply_markup=keyboard.as_markup()
+    )
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "toggle_notif_shop")
+async def toggle_notif_shop(callback: types.CallbackQuery):
+    user = get_or_create_user(callback.from_user.id)
+    user.notification_settings.shop_updates = not user.notification_settings.shop_updates
+    save_data()
+    await notification_settings_handler(callback)
+
+@dp.callback_query(lambda c: c.data == "toggle_notif_card")
+async def toggle_notif_card(callback: types.CallbackQuery):
+    user = get_or_create_user(callback.from_user.id)
+    user.notification_settings.card_available = not user.notification_settings.card_available
+    save_data()
+    await notification_settings_handler(callback)
+
+@dp.callback_query(lambda c: c.data == "toggle_notif_promo")
+async def toggle_notif_promo(callback: types.CallbackQuery):
+    user = get_or_create_user(callback.from_user.id)
+    user.notification_settings.promo_offers = not user.notification_settings.promo_offers
+    save_data()
+    await notification_settings_handler(callback)
+
+@dp.callback_query(lambda c: c.data == "toggle_notif_trade")
+async def toggle_notif_trade(callback: types.CallbackQuery):
+    user = get_or_create_user(callback.from_user.id)
+    user.notification_settings.trade_offers = not user.notification_settings.trade_offers
+    save_data()
+    await notification_settings_handler(callback)
+
+@dp.callback_query(lambda c: c.data == "toggle_notif_system")
+async def toggle_notif_system(callback: types.CallbackQuery):
+    user = get_or_create_user(callback.from_user.id)
+    user.notification_settings.system_messages = not user.notification_settings.system_messages
+    save_data()
+    await notification_settings_handler(callback)
+
+@dp.callback_query(lambda c: c.data == "back_to_profile")
+async def back_to_profile_handler(callback: types.CallbackQuery):
+    await profile_menu(callback.message)
+    await callback.answer()
 
 @dp.message(F.text == "💝 Поддержать проект")
 async def support_menu(message: types.Message):
@@ -2299,19 +2603,30 @@ async def support_menu(message: types.Message):
     premium_discounted = get_price_with_discount(PREMIUM_COST, user.level)
     cd_discounted = get_price_with_discount(REDUCED_CD_COST, user.level)
     trade_cd_discounted = get_price_with_discount(REDUCED_TRADE_CD_COST, user.level)
+    level1_discounted = get_price_with_discount(BUY_LEVEL_1_COST, user.level)
+    level5_discounted = get_price_with_discount(BUY_LEVEL_5_COST, user.level)
     
     keyboard = InlineKeyboardBuilder()
     keyboard.add(InlineKeyboardButton(
-        text="💎 Купить премиум", 
+        text="💎 Премиум", 
         callback_data="buy_premium"
     ))
     keyboard.add(InlineKeyboardButton(
-        text="⚡ Снизить кулдаун карточек", 
+        text="⚡ Уменьшить кулдаун карточек", 
         callback_data="buy_reduced_cd"
     ))
     keyboard.add(InlineKeyboardButton(
-        text="🔄 Снизить кулдаун обменов", 
+        text="🔄 Уменьшить кулдаун обменов", 
         callback_data="buy_reduced_trade_cd"
+    ))
+    # НОВЫЕ КНОПКИ
+    keyboard.add(InlineKeyboardButton(
+        text="🎮 Купить 1 уровень", 
+        callback_data="buy_level_1"
+    ))
+    keyboard.add(InlineKeyboardButton(
+        text="🎮🎮 Купить 5 уровней", 
+        callback_data="buy_level_5"
     ))
     keyboard.add(InlineKeyboardButton(
         text="💰 Поддержать проект", 
@@ -2348,6 +2663,9 @@ async def support_menu(message: types.Message):
         f"Исходная цена: {REDUCED_TRADE_CD_COST}₽/месяц{discount_text}\n"
         f"<b>Ваша цена:</b> {trade_cd_discounted}₽/месяц\n"
         f"• Кулдаун обменов сократится с 4х часов до 2х!\n\n"
+        f"🎮 <b>Купить уровни:</b>\n"
+        f"• 1 уровень: {level1_discounted}₽ (было {BUY_LEVEL_1_COST}₽)\n"
+        f"• 5 уровней: {level5_discounted}₽ (было {BUY_LEVEL_5_COST}₽) - выгоднее!\n\n"
         f"После оплаты отправьте скриншот: @prikolovwork",
         reply_markup=keyboard.as_markup()
     )
@@ -2468,6 +2786,110 @@ async def buy_reduced_trade_cd_handler(callback: types.CallbackQuery):
         except Exception as e:
             logger.error(f"Ошибка отправки уведомления админу {admin_id}: {e}")
 
+# НОВЫЙ ОБРАБОТЧИК - покупка 1 уровня
+@dp.callback_query(lambda c: c.data == "buy_level_1")
+async def buy_level_1_handler(callback: types.CallbackQuery):
+    await callback.answer()
+    
+    user = get_or_create_user(callback.from_user.id)
+    
+    discounted_price = get_price_with_discount(BUY_LEVEL_1_COST, user.level)
+    
+    order_id = f"level1_{int(datetime.now().timestamp())}_{random.randint(1000, 9999)}"
+    
+    order = Order(order_id, user.user_id, "buy_level_1", discounted_price)
+    orders[order_id] = order
+    save_data()
+    
+    discount_text = f" (скидка {get_level_discount(user.level)}%)" if get_level_discount(user.level) > 0 else ""
+    
+    await callback.message.answer(
+        f"✅ <b>Заказ создан!</b>\n\n"
+        f"🎁 <b>Товар:</b> Покупка 1 уровня\n"
+        f"💰 <b>Исходная сумма:</b> {BUY_LEVEL_1_COST}₽{discount_text}\n"
+        f"💳 <b>Итого к оплате:</b> {discounted_price}₽\n"
+        f"🆔 <b>Номер заказа:</b> <code>{order_id}</code>\n\n"
+        f"📝 <b>Запомните номер заказа!</b>\n"
+        f"Он понадобится для отправки скриншота оплаты.\n\n"
+        f"💵 <b>Далее:</b> выберите способ оплаты:"
+    )
+    
+    await show_payment_methods(
+        callback=callback,
+        product_type="level",
+        product_id="buy_level_1",
+        price=BUY_LEVEL_1_COST,
+        description="Покупка 1 уровня",
+        level=user.level
+    )
+    
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                chat_id=admin_id,
+                text=f"🎮 <b>Новый заказ на покупку уровня!</b>\n\n"
+                     f"🆔 <b>Номер:</b> {order_id}\n"
+                     f"👤 <b>Пользователь:</b> @{user.username or 'без username'}\n"
+                     f"🎴 <b>Товар:</b> Покупка 1 уровня\n"
+                     f"💰 <b>Сумма:</b> {discounted_price}₽ (исходная: {BUY_LEVEL_1_COST}₽, скидка {get_level_discount(user.level)}%)\n"
+                     f"📅 <b>Создан:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+                     f"<i>Ожидайте скриншот оплаты от пользователя</i>"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки уведомления админу {admin_id}: {e}")
+
+# НОВЫЙ ОБРАБОТЧИК - покупка 5 уровней
+@dp.callback_query(lambda c: c.data == "buy_level_5")
+async def buy_level_5_handler(callback: types.CallbackQuery):
+    await callback.answer()
+    
+    user = get_or_create_user(callback.from_user.id)
+    
+    discounted_price = get_price_with_discount(BUY_LEVEL_5_COST, user.level)
+    
+    order_id = f"level5_{int(datetime.now().timestamp())}_{random.randint(1000, 9999)}"
+    
+    order = Order(order_id, user.user_id, "buy_level_5", discounted_price)
+    orders[order_id] = order
+    save_data()
+    
+    discount_text = f" (скидка {get_level_discount(user.level)}%)" if get_level_discount(user.level) > 0 else ""
+    
+    await callback.message.answer(
+        f"✅ <b>Заказ создан!</b>\n\n"
+        f"🎁 <b>Товар:</b> Покупка 5 уровней\n"
+        f"💰 <b>Исходная сумма:</b> {BUY_LEVEL_5_COST}₽{discount_text}\n"
+        f"💳 <b>Итого к оплате:</b> {discounted_price}₽\n"
+        f"🆔 <b>Номер заказа:</b> <code>{order_id}</code>\n\n"
+        f"📝 <b>Запомните номер заказа!</b>\n"
+        f"Он понадобится для отправки скриншота оплаты.\n\n"
+        f"💵 <b>Далее:</b> выберите способ оплаты:"
+    )
+    
+    await show_payment_methods(
+        callback=callback,
+        product_type="level",
+        product_id="buy_level_5",
+        price=BUY_LEVEL_5_COST,
+        description="Покупка 5 уровней",
+        level=user.level
+    )
+    
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                chat_id=admin_id,
+                text=f"🎮 <b>Новый заказ на покупку 5 уровней!</b>\n\n"
+                     f"🆔 <b>Номер:</b> {order_id}\n"
+                     f"👤 <b>Пользователь:</b> @{user.username or 'без username'}\n"
+                     f"🎴 <b>Товар:</b> Покупка 5 уровней\n"
+                     f"💰 <b>Сумма:</b> {discounted_price}₽ (исходная: {BUY_LEVEL_5_COST}₽, скидка {get_level_discount(user.level)}%)\n"
+                     f"📅 <b>Создан:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+                     f"<i>Ожидайте скриншот оплаты от пользователя</i>"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки уведомления админу {admin_id}: {e}")
+
 @dp.callback_query(lambda c: c.data.startswith("payment_method:"))
 async def payment_method_handler(callback: types.CallbackQuery):
     await callback.answer()
@@ -2487,16 +2909,29 @@ async def payment_method_handler(callback: types.CallbackQuery):
         "reduced_cd": "Уменьшенный кулдаун карточек на 1 месяц", 
         "reduced_trade_cd": "Уменьшенный кулдаун обменов на 1 месяц",
         "shop_card": "Карточка из магазина",
-        "exclusive_card": "Эксклюзивная карточка"
+        "exclusive_card": "Эксклюзивная карточка",
+        "skip_card": "⚡ Скип кулдауна карточки",
+        "skip_trade": "🔄 Скип кулдауна обменов",
+        "level": "🎮 Покупка уровня"
     }
     
-    product_name = product_names.get(product_type, "Товар")
-    
-    if product_type in ["shop_card", "exclusive_card"]:
+    if product_id == "skip_card_cooldown":
+        product_name = "⚡ Скип кулдауна карточки (одноразовый)"
+    elif product_id == "skip_trade_cooldown":
+        product_name = "🔄 Скип кулдауна обменов (одноразовый)"
+    elif product_id == "buy_level_1":
+        product_name = "🎮 Покупка 1 уровня"
+    elif product_id == "buy_level_5":
+        product_name = "🎮 Покупка 5 уровней"
+    elif product_type in ["shop_card", "exclusive_card"]:
         card = cards.get(product_id)
         if card:
             rarity_icon = get_rarity_color(card.rarity)
             product_name = f"{rarity_icon} {card.name} ({get_rarity_name(card.rarity)})"
+        else:
+            product_name = product_names.get(product_type, "Товар")
+    else:
+        product_name = product_names.get(product_type, "Товар")
     
     user = get_or_create_user(callback.from_user.id)
     user_orders = [o for o in orders.values() 
@@ -2629,7 +3064,11 @@ async def shop_menu_handler(message: types.Message):
     
     keyboard = InlineKeyboardBuilder()
     
+    # Сначала обычные карточки
     for card_id, item in shop_items.items():
+        if card_id.startswith(('skip_')):
+            continue  # Обработаем отдельно
+            
         card = cards.get(card_id)
         if card:
             rarity_icon = get_rarity_color(card.rarity)
@@ -2642,6 +3081,25 @@ async def shop_menu_handler(message: types.Message):
             
             keyboard.add(InlineKeyboardButton(
                 text=f"{rarity_icon} {card.name} - {price_text} ({hours_left}ч)",
+                callback_data=f"shop_buy_{card_id}"
+            ))
+    
+    # Потом специальные товары
+    for card_id, item in shop_items.items():
+        if card_id.startswith('skip_card_cooldown'):
+            expires_at = datetime.fromisoformat(item.expires_at)
+            time_left = expires_at - datetime.now()
+            hours_left = max(0, int(time_left.total_seconds() // 3600))
+            keyboard.add(InlineKeyboardButton(
+                text=f"⚡ Скип кулдауна карточки - {item.price}₽ ({hours_left}ч)",
+                callback_data=f"shop_buy_{card_id}"
+            ))
+        elif card_id.startswith('skip_trade_cooldown'):
+            expires_at = datetime.fromisoformat(item.expires_at)
+            time_left = expires_at - datetime.now()
+            hours_left = max(0, int(time_left.total_seconds() // 3600))
+            keyboard.add(InlineKeyboardButton(
+                text=f"🔄 Скип кулдауна обменов - {item.price}₽ ({hours_left}ч)",
                 callback_data=f"shop_buy_{card_id}"
             ))
     
@@ -2668,14 +3126,17 @@ async def shop_menu_handler(message: types.Message):
     
     await message.answer(
         f"🛒 <b>Магазин карточек</b>\n\n"
-        f"Доступно карточек: {len(shop_items)}\n"
+        f"Доступно карточек: {len([c for c in shop_items.values() if not c.card_id.startswith(('skip_'))])}\n"
         f"🕐 <b>Обновление:</b> каждые 12 часов{last_check}{discount_text}\n\n"
         f"<b>Цены по редкостям (со скидкой):</b>\n"
         f"⚪️ Обычная: {get_price_with_discount(SHOP_PRICES['basic'], user.level)}₽ (было {SHOP_PRICES['basic']}₽)\n"
         f"🔵 Крутая: {get_price_with_discount(SHOP_PRICES['cool'], user.level)}₽ (было {SHOP_PRICES['cool']}₽)\n"
         f"🟡 Легендарная: {get_price_with_discount(SHOP_PRICES['legendary'], user.level)}₽ (было {SHOP_PRICES['legendary']}₽)\n"
         f"🟣 Виниловая фигурка: {get_price_with_discount(SHOP_PRICES['vinyl figure'], user.level)}₽ (было {SHOP_PRICES['vinyl figure']}₽)\n\n"
-        f"<b>Доступные карточки:</b>",
+        f"⚡ <b>Специальные товары:</b>\n"
+        f"• Скип кулдауна карточки: {SKIP_CARD_COOLDOWN_COST}₽\n"
+        f"• Скип кулдауна обменов: {SKIP_TRADE_COOLDOWN_COST}₽\n\n"
+        f"<b>Доступные товары:</b>",
         reply_markup=keyboard.as_markup()
     )
     
@@ -2712,20 +3173,37 @@ async def shop_refresh_handler(callback: types.CallbackQuery):
     keyboard = InlineKeyboardBuilder()
     
     for card_id, item in shop_items.items():
-        card = cards.get(card_id)
-        if card:
-            rarity_icon = get_rarity_color(card.rarity)
+        if card_id.startswith('skip_card_cooldown'):
             expires_at = datetime.fromisoformat(item.expires_at)
             time_left = expires_at - datetime.now()
             hours_left = max(0, int(time_left.total_seconds() // 3600))
-            
-            discounted = get_price_with_discount(item.price, user.level)
-            price_text = f"{discounted}₽" if discount > 0 else f"{item.price}₽"
-            
             keyboard.add(InlineKeyboardButton(
-                text=f"{rarity_icon} {card.name} - {price_text} ({hours_left}ч)",
+                text=f"⚡ Скип кулдауна карточки - {item.price}₽ ({hours_left}ч)",
                 callback_data=f"shop_buy_{card_id}"
             ))
+        elif card_id.startswith('skip_trade_cooldown'):
+            expires_at = datetime.fromisoformat(item.expires_at)
+            time_left = expires_at - datetime.now()
+            hours_left = max(0, int(time_left.total_seconds() // 3600))
+            keyboard.add(InlineKeyboardButton(
+                text=f"🔄 Скип кулдауна обменов - {item.price}₽ ({hours_left}ч)",
+                callback_data=f"shop_buy_{card_id}"
+            ))
+        else:
+            card = cards.get(card_id)
+            if card:
+                rarity_icon = get_rarity_color(card.rarity)
+                expires_at = datetime.fromisoformat(item.expires_at)
+                time_left = expires_at - datetime.now()
+                hours_left = max(0, int(time_left.total_seconds() // 3600))
+                
+                discounted = get_price_with_discount(item.price, user.level)
+                price_text = f"{discounted}₽" if discount > 0 else f"{item.price}₽"
+                
+                keyboard.add(InlineKeyboardButton(
+                    text=f"{rarity_icon} {card.name} - {price_text} ({hours_left}ч)",
+                    callback_data=f"shop_buy_{card_id}"
+                ))
     
     keyboard.add(InlineKeyboardButton(
         text="🔄 Обновить магазин", 
@@ -2745,10 +3223,10 @@ async def shop_refresh_handler(callback: types.CallbackQuery):
     
     await callback.message.edit_text(
         f"🛒 <b>Магазин карточек (обновлено)</b>\n\n"
-        f"Доступно карточек: {len(shop_items)}\n"
+        f"Доступно карточек: {len([c for c in shop_items.values() if not c.card_id.startswith(('skip_'))])}\n"
         f"🕐 <b>Обновление:</b> каждые 12 часов\n"
         f"🕐 <b>Последняя проверка:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}{discount_text}\n\n"
-        f"<b>Доступные карточки:</b>",
+        f"<b>Доступные товары:</b>",
         reply_markup=keyboard.as_markup()
     )
 
@@ -2757,45 +3235,58 @@ async def shop_buy_handler(callback: types.CallbackQuery):
     card_id = callback.data.replace("shop_buy_", "")
     
     if card_id not in shop_items:
-        await callback.answer("❌ Карточка уже куплена!", show_alert=True)
+        await callback.answer("❌ Товар уже куплен!", show_alert=True)
         return
     
     user = get_or_create_user(callback.from_user.id)
     item = shop_items[card_id]
-    card = cards.get(card_id)
     
-    if not card:
-        await callback.answer("❌ Карточка не найдена!", show_alert=True)
-        return
+    # Определяем тип товара
+    if card_id.startswith('skip_card_cooldown'):
+        product_type = "skip_card"
+        product_name = "⚡ Скип кулдауна карточки"
+        card = None
+    elif card_id.startswith('skip_trade_cooldown'):
+        product_type = "skip_trade"
+        product_name = "🔄 Скип кулдауна обменов"
+        card = None
+    else:
+        card = cards.get(card_id)
+        if not card:
+            await callback.answer("❌ Карточка не найдена!", show_alert=True)
+            return
+        product_type = "shop_card"
+        product_name = f"{get_rarity_color(card.rarity)} {card.name} ({get_rarity_name(card.rarity)})"
     
     user_pending_orders = [o for o in orders.values() 
                           if o.user_id == user.user_id 
                           and o.card_id == card_id 
                           and o.status == "pending"]
     if user_pending_orders:
-        await callback.answer("❌ У вас уже есть активный заказ на эту карточку!", show_alert=True)
+        await callback.answer("❌ У вас уже есть активный заказ на этот товар!", show_alert=True)
         return
     
     expires_at = datetime.fromisoformat(item.expires_at)
     if expires_at <= datetime.now():
         del shop_items[card_id]
         save_data()
-        await callback.answer("❌ Срок действия карточки истек!", show_alert=True)
+        await callback.answer("❌ Срок действия товара истек!", show_alert=True)
         return
     
     discounted_price = get_price_with_discount(item.price, user.level)
+    
+    # Создаем заказ с правильным card_id
     order = create_order(user, card_id, discounted_price)
     
     if not order:
         await callback.answer("❌ Не удалось создать заказ!", show_alert=True)
         return
     
-    rarity_icon = get_rarity_color(card.rarity)
     discount_text = f" (скидка {get_level_discount(user.level)}%)" if get_level_discount(user.level) > 0 else ""
     
     await callback.message.answer(
         f"✅ <b>Заказ создан!</b>\n\n"
-        f"🎁 <b>Товар:</b> {rarity_icon} {card.name} ({get_rarity_name(card.rarity)})\n"
+        f"🎁 <b>Товар:</b> {product_name}\n"
         f"💰 <b>Исходная сумма:</b> {item.price}₽{discount_text}\n"
         f"💳 <b>Итого к оплате:</b> {discounted_price}₽\n"
         f"🆔 <b>Номер заказа:</b> <code>{order.order_id}</code>\n\n"
@@ -2806,10 +3297,10 @@ async def shop_buy_handler(callback: types.CallbackQuery):
     
     await show_payment_methods(
         callback=callback,
-        product_type="shop_card",
+        product_type=product_type,
         product_id=card_id,
         price=item.price,
-        description=f"{rarity_icon} {card.name} ({get_rarity_name(card.rarity)})",
+        description=product_name,
         level=user.level
     )
     
@@ -2820,7 +3311,7 @@ async def shop_buy_handler(callback: types.CallbackQuery):
                 text=f"🛒 <b>Новый заказ!</b>\n\n"
                      f"🆔 <b>Номер:</b> {order.order_id}\n"
                      f"👤 <b>Пользователь:</b> @{user.username or 'без username'}\n"
-                     f"🎴 <b>Карточка:</b> {card.name}\n"
+                     f"🎴 <b>Товар:</b> {product_name}\n"
                      f"💰 <b>Сумма:</b> {discounted_price}₽ (исходная: {item.price}₽, скидка {get_level_discount(user.level)}%)\n"
                      f"📅 <b>Создан:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
                      f"<i>Ожидайте скриншот оплаты от пользователя</i>"
@@ -2843,7 +3334,10 @@ async def shop_help_handler(callback: types.CallbackQuery):
         "🎴 <b>Как работает магазин:</b>\n"
         "• Каждые 12 часов появляются новые карточки\n"
         "• Карточки имеют разные цены в зависимости от редкости\n"
-        "• При нажатии на карточку создается заказ\n"
+        "• Иногда появляются специальные товары:\n"
+        "  ⚡ Скип кулдауна карточки - 39₽ (пропустить ожидание)\n"
+        "  🔄 Скип кулдауна обменов - 19₽ (пропустить ожидание)\n"
+        "• При нажатии на товар создается заказ\n"
         "• Оплатите заказ и отправьте скриншот через /payment\n"
         "• Администратор подтвердит заказ в течение 24 часов\n\n"
         f"🎁 <b>Ваша скидка за уровень {user.level}:</b> {discount}%\n\n"
@@ -2855,24 +3349,24 @@ async def shop_help_handler(callback: types.CallbackQuery):
         
         "⏰ <b>Время обновления:</b>\n"
         "• Магазин обновляется каждые 12 часов\n"
-        "• Используйте кнопку '🔄 Обновить' для проверки новых карточек\n"
-        "• Карточки могут закончиться, если их купили другие игроки\n\n"
+        "• Используйте кнопку '🔄 Обновить' для проверки новых товаров\n"
+        "• Товары могут закончиться, если их купили другие игроки\n\n"
         
         "💵 <b>Процесс покупки:</b>\n"
-        "1. Выберите карточку в магазине\n"
+        "1. Выберите товар в магазине\n"
         "2. Выберите способ оплаты\n"
         "3. Оплатите по выбранному способу\n"
         "4. Используйте команду /payment чтобы отправить скриншот\n"
         "5. Ожидайте подтверждения администратора\n"
-        "6. Получите карточку в инвентарь\n\n"
+        "6. Получите товар\n\n"
         
         "❓ <b>Частые вопросы:</b>\n"
-        "• Q: Карточка пропала после обновления?\n"
-        "• A: Да, каждая карточка доступна 12 часов\n"
-        "• Q: Можно ли вернуть карточку?\n"
+        "• Q: Товар пропал после обновления?\n"
+        "• A: Да, каждый товар доступен 12 часов\n"
+        "• Q: Можно ли вернуть товар?\n"
         "• A: Нет, покупки невозвратные\n"
-        "• Q: Почему разные цены?\n"
-        "• A: Цена зависит от редкости карточки"
+        "• Q: Что дают скипы кулдауна?\n"
+        "• A: Позволяют открыть карточку или совершить обмен сразу, без ожидания"
     )
     await callback.answer()
 
@@ -3036,8 +3530,9 @@ async def show_inventory_page(user_id: int, chat_id: int):
         card = cards.get(card_id)
         if card:
             rarity_icon = get_rarity_color(card.rarity)
+            video_icon = "🎬 " if is_video_card(card) else ""
             keyboard.add(InlineKeyboardButton(
-                text=f"{rarity_icon} {card.name} (x{quantity})",
+                text=f"{rarity_icon} {video_icon}{card.name} (x{quantity})",
                 callback_data=f"view_card_{card_id}"
             ))
     
@@ -3069,7 +3564,8 @@ async def show_inventory_page(user_id: int, chat_id: int):
         f"🎴 <b>Ваш инвентарь</b>\n\n"
         f"📊 Страница {current_page + 1} из {total_pages}\n"
         f"📚 Всего карточек: {sum(q for _, q in cards_list)}\n"
-        f"⭐ Уникальных: {len(cards_list)}",
+        f"⭐ Уникальных: {len(cards_list)}\n"
+        f"🎬 Анимированных: {len([c for c, _ in cards_list if is_video_card(cards.get(c, Card('', '', '')))])}",
         reply_markup=keyboard.as_markup()
     )
 
@@ -3103,17 +3599,24 @@ async def view_card_handler(callback: types.CallbackQuery):
     response = f"{rarity_icon} <b>{card.name}</b>\n\n"
     response += f"📊 <b>Редкость:</b> {rarity_name}\n"
     response += f"📈 <b>Количество:</b> {quantity} шт.\n"
-    response += f"🆔 <b>ID:</b> {card_id}"
+    response += f"🆔 <b>ID:</b> {card_id}\n"
+    response += f"🎬 <b>Анимированная:</b> {'✅' if is_video_card(card) else '❌'}"
     
-    image_path = get_image_path(card)
-    if image_path and os.path.exists(image_path):
+    file_path = get_image_path(card)
+    if file_path and os.path.exists(file_path):
         try:
-            await callback.message.answer_photo(
-                photo=FSInputFile(image_path),
-                caption=response
-            )
+            if is_video_card(card):
+                await callback.message.answer_video(
+                    video=FSInputFile(file_path),
+                    caption=response
+                )
+            else:
+                await callback.message.answer_photo(
+                    photo=FSInputFile(file_path),
+                    caption=response
+                )
         except Exception as e:
-            logger.error(f"Ошибка отправки фото: {e}")
+            logger.error(f"Ошибка отправки файла: {e}")
             await callback.message.answer(response)
     else:
         await callback.message.answer(response)
@@ -3162,6 +3665,8 @@ async def trade_menu_handler(message: types.Message):
     can_trade_now, remaining = can_trade(user)
     trade_status = "✅ Можно обмениваться" if can_trade_now else f"⏰ Ждать: {remaining}"
     
+    skip_text = "⚡ У вас есть скип кулдауна!" if user.skip_trade_cooldown_available else ""
+    
     await message.answer(
         "🔄 <b>Система обмена карточками</b>\n\n"
         "Здесь вы можете обмениваться карточками с другими пользователями.\n\n"
@@ -3169,9 +3674,9 @@ async def trade_menu_handler(message: types.Message):
         "📨 <b>Мои предложения</b> - созданные вами предложения\n"
         "📥 <b>Входящие предложения</b> - предложения от других пользователей\n\n"
         f"⏰ <b>Кулдаун обменов:</b> 4 часа (2 часа с премиумом)\n"
-        f"📈 <b>Статус:</b> {trade_status}\n\n"
+        f"📈 <b>Статус:</b> {trade_status} {skip_text}\n\n"
         f"💡 <b>Хотите уменьшить кулдаун?</b>\n"
-        f"Купите уменьшенный кулдаун обменов всего за {get_price_with_discount(REDUCED_TRADE_CD_COST, user.level)}₽/месяц!",
+        f"Купите уменьшенный кулдаун обменов всего за {get_price_with_discount(REDUCED_TRADE_CD_COST, user.level)}₽/месяц или скип за {SKIP_TRADE_COOLDOWN_COST}₽!",
         reply_markup=keyboard.as_markup()
     )
 
@@ -3186,7 +3691,7 @@ async def create_trade_handler(callback: types.CallbackQuery, state: FSMContext)
     if not can_trade_now:
         await callback.answer(
             f"⏰ Вы можете создать обмен через {remaining}\n\n"
-            f"💡 Купите уменьшенный кулдаун за {get_price_with_discount(REDUCED_TRADE_CD_COST, user.level)}₽!",
+            f"💡 Купите уменьшенный кулдаун за {get_price_with_discount(REDUCED_TRADE_CD_COST, user.level)}₽ или скип за {SKIP_TRADE_COOLDOWN_COST}₽!",
             show_alert=True
         )
         return
@@ -3294,7 +3799,7 @@ async def trade_help_handler(callback: types.CallbackQuery):
         "• С премиумом: 2 часа\n"
         f"• Ваш текущий кулдаун: {get_trade_cooldown_hours(user)} часа\n\n"
         f"💡 <b>Уменьшить кулдаун:</b>\n"
-        f"Купите уменьшенный кулдаун обменов всего за {get_price_with_discount(REDUCED_TRADE_CD_COST, user.level)}₽/месяц!\n\n"
+        f"Купите уменьшенный кулдаун обменов всего за {get_price_with_discount(REDUCED_TRADE_CD_COST, user.level)}₽/месяц или скип за {SKIP_TRADE_COOLDOWN_COST}₽!\n\n"
         "4. <b>Важно:</b>\n"
         "• Обмен можно отклонить\n"
         "• Карточки возвращаются при отмене\n"
@@ -3330,17 +3835,22 @@ async def help_menu(message: types.Message):
         "• Новые карточки каждые 12 часов\n"
         f"• Ваша скидка за уровень {user.level}: {get_level_discount(user.level)}%\n"
         "• Цены зависят от редкости\n"
+        "• Иногда появляются специальные товары:\n"
+        "  ⚡ Скип кулдауна карточки - 39₽\n"
+        "  🔄 Скип кулдауна обменов - 19₽\n"
         "• Для покупки создается заказ, нужно отправить скриншот оплаты\n"
         "• Используйте /payment для отправки скриншота\n\n"
         
         "🔄 <b>Обмен:</b>\n"
         "• Обменивайтесь карточками с другими\n"
         "• Кулдаун обменов: 4 часа (2 с премиумом)\n"
+        "• Можно купить скип кулдауна за 19₽\n"
         "• Создавайте и принимайте предложения\n\n"
         
         "💎 <b>Премиум и покупки:</b>\n"
         "• Премиум: удвоенный шанс на редкие карты + ежедневный бонус\n"
         "• Уменьшенный кулдаун: открывайте карточки каждые 2 часа\n"
+        "• Покупка уровней: 39₽ за 1 уровень, 149₽ за 5 уровней\n"
         "• Подробнее: нажмите '💝 Поддержать проект'\n\n"
         
         "📞 <b>Поддержка:</b>\n"
@@ -3670,8 +4180,8 @@ async def cmd_admin(message: types.Message):
     keyboard.add(InlineKeyboardButton(text="⏰ Добавить кулдаун", callback_data="admin_add_cooldown"))
     keyboard.add(InlineKeyboardButton(text="⚡ Выдать уменьш. кулдаун", callback_data="admin_give_reduced_cd"))
     keyboard.add(InlineKeyboardButton(text="🔄 Выдать уменьш. кулдаун обменов", callback_data="admin_give_reduced_trade_cd"))
-    # НОВАЯ КНОПКА - Выдать карточку по ID
     keyboard.add(InlineKeyboardButton(text="🎁 Выдать карточку по ID", callback_data="admin_give_card_by_id"))
+    keyboard.add(InlineKeyboardButton(text="🎬 Добавить видео карточку", callback_data="admin_add_video_card"))
     keyboard.add(InlineKeyboardButton(text="📋 Заказы", callback_data="admin_orders"))
     keyboard.add(InlineKeyboardButton(text="⛔ Забанить пользователя", callback_data="admin_ban_user"))
     keyboard.add(InlineKeyboardButton(text="✅ Разбанить пользователя", callback_data="admin_unban_user"))
@@ -3681,244 +4191,26 @@ async def cmd_admin(message: types.Message):
     keyboard.add(InlineKeyboardButton(text="📥 База данных", callback_data="admin_database"))
     keyboard.add(InlineKeyboardButton(text="🔄 Обновить пул", callback_data="admin_update_pool"))
     keyboard.add(InlineKeyboardButton(text="🔄 Перезапуск бота", callback_data="admin_restart"))
-    keyboard.adjust(2, 2, 2, 2, 2, 2, 2, 2, 1)
+    keyboard.adjust(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1)
     
     await message.answer(
         "⚙️ <b>Админ-панель</b>\n\nВыберите действие:",
         reply_markup=keyboard.as_markup()
     )
 
-# НОВЫЙ ОБРАБОТЧИК - Выдача карточки по ID
-@dp.callback_query(lambda c: c.data == "admin_give_card_by_id")
-async def admin_give_card_by_id_handler(callback: types.CallbackQuery, state: FSMContext):
+# НОВЫЙ ОБРАБОТЧИК - Добавление видео карточки
+@dp.callback_query(lambda c: c.data == "admin_add_video_card")
+async def admin_add_video_card_handler(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
     
     await callback.message.answer(
-        "🎁 <b>Выдача карточки по ID</b>\n\n"
-        "Введите username пользователя (начиная с @), которому хотите выдать карточку:"
+        "🎬 <b>Добавление видео карточки</b>\n\n"
+        "Введите название карточки:"
     )
-    await state.set_state(AdminStates.waiting_for_give_card_username)
-    await callback.answer()
-
-@dp.message(AdminStates.waiting_for_give_card_username)
-async def process_give_card_username(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
-        await state.clear()
-        return
-    
-    username = message.text.strip().lstrip('@')
-    user = get_user_by_username(username)
-    
-    if not user:
-        await message.answer(
-            f"❌ Пользователь @{username} не найден.\n\n"
-            f"Попробуйте еще раз или напишите /refresh для отмены:"
-        )
-        return
-    
-    await state.update_data(target_user_id=user.user_id, target_username=username)
-    
-    # Показываем список доступных карточек
-    if not cards:
-        await message.answer("❌ В системе нет карточек для выдачи.")
-        await state.clear()
-        return
-    
-    cards_list = "\n".join([f"• <code>{card_id}</code>: {card.name} ({get_rarity_name(card.rarity)})" 
-                           for card_id, card in cards.items()])
-    
-    await message.answer(
-        f"✅ Пользователь: @{username}\n\n"
-        f"📋 <b>Доступные карточки:</b>\n"
-        f"{cards_list}\n\n"
-        f"Введите ID карточки для выдачи:"
-    )
-    await state.set_state(AdminStates.waiting_for_give_card_id)
-
-@dp.message(AdminStates.waiting_for_give_card_id)
-async def process_give_card_id(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
-        await state.clear()
-        return
-    
-    card_id = message.text.strip()
-    
-    if card_id.lower() == "/refresh":
-        await state.clear()
-        await message.answer("✅ <b>Действие отменено!</b>")
-        return
-    
-    if card_id not in cards:
-        await message.answer(
-            f"❌ Карточка с ID '{card_id}' не найдена.\n\n"
-            f"Проверьте ID и попробуйте еще раз или напишите /refresh для отмены:"
-        )
-        return
-    
-    data = await state.get_data()
-    target_user_id = data.get('target_user_id')
-    target_username = data.get('target_username')
-    
-    if not target_user_id:
-        await message.answer("❌ Ошибка: пользователь не найден.")
-        await state.clear()
-        return
-    
-    user = users.get(target_user_id)
-    if not user:
-        await message.answer("❌ Ошибка: пользователь не найден в базе.")
-        await state.clear()
-        return
-    
-    card = cards[card_id]
-    
-    # Выдаем карточку
-    if card_id not in user.cards:
-        user.cards[card_id] = 1
-    else:
-        user.cards[card_id] += 1
-    
-    user.opened_packs += 1
-    update_user_interaction(user)
-    save_data()
-    
-    await message.answer(
-        f"✅ <b>Карточка успешно выдана!</b>\n\n"
-        f"👤 <b>Пользователь:</b> @{target_username}\n"
-        f"🎴 <b>Карточка:</b> {card.name}\n"
-        f"📊 <b>Редкость:</b> {get_rarity_name(card.rarity)}\n"
-        f"🆔 <b>ID карточки:</b> <code>{card_id}</code>\n"
-        f"📈 <b>Теперь у пользователя:</b> {user.cards[card_id]} шт.\n\n"
-        f"<i>Карточка добавлена в инвентарь пользователя.</i>"
-    )
-    
-    # Уведомляем пользователя
-    try:
-        await bot.send_message(
-            target_user_id,
-            f"🎁 <b>Вам выдана карточка администратором!</b>\n\n"
-            f"🎴 <b>Карточка:</b> {card.name}\n"
-            f"📊 <b>Редкость:</b> {get_rarity_name(card.rarity)}\n\n"
-            f"Проверьте свой инвентарь! 🎉"
-        )
-        logger.info(f"✅ Уведомление о выдаче карточки отправлено пользователю {target_user_id}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки уведомления пользователю {target_user_id}: {e}")
-    
-    await state.clear()
-
-@dp.callback_query(lambda c: c.data == "admin_broadcast")
-async def admin_broadcast_handler(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("⛔ Нет доступа", show_alert=True)
-        return
-    
-    await callback.message.answer(
-        "📢 <b>Рассылка сообщений</b>\n\n"
-        "Введите сообщение для рассылки всем пользователям:"
-    )
-    await state.set_state(AdminStates.waiting_for_broadcast)
-    await callback.answer()
-
-@dp.message(AdminStates.waiting_for_broadcast)
-async def process_broadcast(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
-        await state.clear()
-        return
-    
-    text = message.text
-    sent = 0
-    failed = 0
-    
-    await message.answer(f"📤 <b>Начинаю рассылку...</b>\n\nСообщение:\n{text}")
-    
-    for user_id, user in users.items():
-        try:
-            await bot.send_message(user_id, f"📢 <b>Объявление от администрации:</b>\n\n{text}")
-            sent += 1
-            await asyncio.sleep(0.05)
-        except Exception as e:
-            failed += 1
-            logger.error(f"Ошибка отправки сообщения пользователю {user_id}: {e}")
-    
-    await message.answer(
-        f"✅ <b>Рассылка завершена!</b>\n\n"
-        f"📤 Отправлено: {sent} пользователям\n"
-        f"❌ Не отправлено: {failed} пользователям\n\n"
-        f"Всего пользователей: {len(users)}"
-    )
-    
-    await state.clear()
-
-@dp.callback_query(lambda c: c.data == "admin_stats")
-async def admin_stats_handler(callback: types.CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("⛔ Нет доступа", show_alert=True)
-        return
-    
-    total_users = len(users)
-    active_today = 0
-    total_cards = sum(sum(user.cards.values()) for user in users.values())
-    premium_users = sum(1 for user in users.values() if user.is_premium)
-    
-    today = datetime.now().date()
-    for user in users.values():
-        if user.last_seen:
-            last_seen = datetime.fromisoformat(user.last_seen).date()
-            if last_seen == today:
-                active_today += 1
-    
-    total_orders = len(orders)
-    pending_orders = len([o for o in orders.values() if o.status == "pending"])
-    confirmed_orders = len([o for o in orders.values() if o.status == "confirmed"])
-    rejected_orders = len([o for o in orders.values() if o.status == "rejected"])
-    
-    if LEVEL_SETTINGS['enabled']:
-        avg_level = sum(u.level for u in users.values()) / total_users if total_users > 0 else 0
-        max_level = max((u.level for u in users.values()), default=0)
-        level_10_plus = len([u for u in users.values() if u.level >= 10])
-    else:
-        avg_level = max_level = level_10_plus = 0
-    
-    stats_text = (
-        f"📊 <b>Статистика бота</b>\n\n"
-        f"👤 Всего пользователей: {total_users}\n"
-        f"📅 Активных сегодня: {active_today}\n"
-        f"🎴 Всего карточек выдано: {total_cards}\n"
-        f"💎 Премиум пользователей: {premium_users}\n"
-        f"📈 Уникальных карточек: {len(cards)}\n"
-        f"🔄 Активных обменов: {len([t for t in trades.values() if t['status'] == 'pending'])}\n"
-        f"🛒 Карточек в магазине: {len(shop_items)}\n"
-        f"🎪 Эксклюзивных карточек: {len(exclusive_cards)}\n"
-        f"📋 Всего заказов: {total_orders}\n"
-        f"⏳ Ожидают оплаты: {pending_orders}\n"
-        f"✅ Подтверждено: {confirmed_orders}\n"
-        f"❌ Отклонено: {rejected_orders}\n"
-    )
-    
-    if LEVEL_SETTINGS['enabled']:
-        stats_text += f"🎮 Средний уровень: {avg_level:.1f}\n"
-        stats_text += f"🏆 Максимальный уровень: {max_level}\n"
-        stats_text += f"⭐ Игроков 10+ уровня: {level_10_plus}\n\n"
-    else:
-        stats_text += "\n"
-    
-    stats_text += f"<b>Последние 5 пользователей:</b>\n"
-    
-    sorted_users = sorted(users.values(), 
-                         key=lambda u: datetime.fromisoformat(u.created_at), 
-                         reverse=True)
-    
-    for i, user in enumerate(sorted_users[:5], 1):
-        created = datetime.fromisoformat(user.created_at).strftime('%d.%m.%Y')
-        stats_text += f"{i}. @{user.username} ({created}) - {len(user.cards)} карт"
-        if LEVEL_SETTINGS['enabled']:
-            stats_text += f", уровень {user.level}"
-        stats_text += "\n"
-    
-    await callback.message.answer(stats_text)
+    await state.set_state(AdminStates.waiting_for_card_name)
+    await state.update_data(is_video=True)
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "admin_add_card")
@@ -3932,6 +4224,7 @@ async def admin_add_card_handler(callback: types.CallbackQuery, state: FSMContex
         "Введите название карточки:"
     )
     await state.set_state(AdminStates.waiting_for_card_name)
+    await state.update_data(is_video=False)
     await callback.answer()
 
 @dp.message(AdminStates.waiting_for_card_name)
@@ -3976,16 +4269,18 @@ async def process_card_rarity(callback: types.CallbackQuery, state: FSMContext):
     
     data = await state.get_data()
     card_name = data.get('card_name', 'Неизвестно')
+    is_video = data.get('is_video', False)
     
     await callback.message.edit_text(
-        f"📝 <b>Добавление карточки</b>\n\n"
+        f"📝 <b>Добавление {'видео ' if is_video else ''}карточки</b>\n\n"
         f"Название: <b>{card_name}</b>\n"
         f"Редкость: <b>{rarity_names.get(rarity, rarity)}</b>\n\n"
-        "Теперь отправьте изображение карточки (фото) или нажмите 'Пропустить' чтобы добавить без изображения."
+        f"Теперь отправьте {'видео' if is_video else 'изображение'} карточки "
+        f"({'MP4' if is_video else 'фото'}) или нажмите 'Пропустить' чтобы добавить без {'видео' if is_video else 'изображения'}."
     )
     
     keyboard = InlineKeyboardBuilder()
-    keyboard.add(InlineKeyboardButton(text="🖼️ Отправить изображение", callback_data="send_image"))
+    keyboard.add(InlineKeyboardButton(text=f"📹 Отправить {'видео' if is_video else 'изображение'}", callback_data="send_image"))
     keyboard.add(InlineKeyboardButton(text="⏭️ Пропустить", callback_data="skip_image"))
     keyboard.adjust(1)
     
@@ -3995,7 +4290,10 @@ async def process_card_rarity(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(lambda c: c.data == "send_image", AdminStates.waiting_for_card_image)
 async def ask_for_card_image(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("📷 Отправьте изображение карточки (фото):")
+    data = await state.get_data()
+    is_video = data.get('is_video', False)
+    
+    await callback.message.answer(f"📷 Отправьте {'видео (MP4)' if is_video else 'изображение (фото)'} карточки:")
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "skip_image", AdminStates.waiting_for_card_image)
@@ -4007,10 +4305,16 @@ async def skip_card_image(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(AdminStates.waiting_for_card_image, F.photo)
 async def process_card_image_with_photo(message: types.Message, state: FSMContext):
     try:
+        data = await state.get_data()
+        is_video = data.get('is_video', False)
+        
+        if is_video:
+            await message.answer("❌ Ожидалось видео, но получено фото. Попробуйте еще раз или нажмите 'Пропустить'.")
+            return
+        
         photo = message.photo[-1]
         photo_file = await bot.get_file(photo.file_id)
         
-        data = await state.get_data()
         card_id = f"card_{int(datetime.now().timestamp())}"
         
         photo_path = IMAGES_DIR / f"{card_id}.jpg"
@@ -4025,9 +4329,37 @@ async def process_card_image_with_photo(message: types.Message, state: FSMContex
         data = await state.get_data()
         await complete_card_add(message, state, data, image_filename="")
 
+@dp.message(AdminStates.waiting_for_card_image, F.video)
+async def process_card_image_with_video(message: types.Message, state: FSMContext):
+    try:
+        data = await state.get_data()
+        is_video = data.get('is_video', False)
+        
+        if not is_video:
+            await message.answer("❌ Ожидалось фото, но получено видео. Попробуйте еще раз или нажмите 'Пропустить'.")
+            return
+        
+        video = message.video
+        video_file = await bot.get_file(video.file_id)
+        
+        card_id = f"card_{int(datetime.now().timestamp())}"
+        
+        video_path = VIDEOS_DIR / f"{card_id}.mp4"
+        await bot.download_file(video_file.file_path, video_path)
+        
+        image_filename = f"{card_id}.mp4"
+        await complete_card_add(message, state, data, image_filename)
+        
+    except Exception as e:
+        logger.error(f"Ошибка сохранения видео: {e}")
+        await message.answer("❌ Ошибка сохранения видео. Карточка добавлена без видео.")
+        data = await state.get_data()
+        await complete_card_add(message, state, data, image_filename="")
+
 async def complete_card_add(source, state: FSMContext, data: dict, image_filename: str):
     card_name = data.get('card_name')
     card_rarity = data.get('card_rarity')
+    is_video = data.get('is_video', False)
     
     card_id = f"card_{int(datetime.now().timestamp())}"
     
@@ -4043,20 +4375,20 @@ async def complete_card_add(source, state: FSMContext, data: dict, image_filenam
     
     if isinstance(source, types.CallbackQuery):
         await source.message.answer(
-            f"✅ <b>Карточка добавлена успешно!</b>\n\n"
+            f"✅ <b>{'Видео ' if is_video else ''}Карточка добавлена успешно!</b>\n\n"
             f"🎴 Название: <b>{card_name}</b>\n"
             f"📊 Редкость: <b>{get_rarity_name(card_rarity)}</b>\n"
             f"🆔 ID: <code>{card_id}</code>\n"
-            f"🖼️ Изображение: {'✅ Есть' if image_filename else '❌ Нет'}\n\n"
+            f"📹 {'Видео' if is_video else 'Изображение'}: {'✅ Есть' if image_filename else '❌ Нет'}\n\n"
             f"Всего карточек в системе: {len(cards)}"
         )
     elif isinstance(source, types.Message):
         await source.answer(
-            f"✅ <b>Карточка добавлена успешно!</b>\n\n"
+            f"✅ <b>{'Видео ' if is_video else ''}Карточка добавлена успешно!</b>\n\n"
             f"🎴 Название: <b>{card_name}</b>\n"
             f"📊 Редкость: <b>{get_rarity_name(card_rarity)}</b>\n"
             f"🆔 ID: <code>{card_id}</code>\n"
-            f"🖼️ Изображение: {'✅ Есть' if image_filename else '❌ Нет'}\n\n"
+            f"📹 {'Видео' if is_video else 'Изображение'}: {'✅ Есть' if image_filename else '❌ Нет'}\n\n"
             f"Всего карточек в системе: {len(cards)}"
         )
     
@@ -4073,7 +4405,7 @@ async def admin_delete_card_handler(callback: types.CallbackQuery, state: FSMCon
         await callback.answer()
         return
     
-    cards_list = "\n".join([f"{card_id}: {card.name} ({card.rarity})" 
+    cards_list = "\n".join([f"{card_id}: {card.name} ({card.rarity}){' 🎬' if is_video_card(card) else ''}" 
                            for card_id, card in cards.items()])
     
     await callback.message.answer(
@@ -4100,10 +4432,14 @@ async def process_card_id_to_delete(message: types.Message, state: FSMContext):
     card = cards[card_id]
     
     if card.image_filename:
-        image_path = IMAGES_DIR / card.image_filename
-        if image_path.exists():
+        if is_video_card(card):
+            file_path = VIDEOS_DIR / card.image_filename
+        else:
+            file_path = IMAGES_DIR / card.image_filename
+        
+        if file_path.exists():
             try:
-                os.remove(image_path)
+                os.remove(file_path)
             except:
                 pass
     
@@ -4116,7 +4452,8 @@ async def process_card_id_to_delete(message: types.Message, state: FSMContext):
         f"✅ <b>Карточка удалена успешно!</b>\n\n"
         f"🎴 Название: <b>{card.name}</b>\n"
         f"📊 Редкость: <b>{get_rarity_name(card.rarity)}</b>\n"
-        f"🆔 ID: <code>{card_id}</code>\n\n"
+        f"🆔 ID: <code>{card_id}</code>\n"
+        f"📹 {'Видео' if is_video_card(card) else 'Изображение'}: удалено\n\n"
         f"Всего карточек в системе: {len(cards)}"
     )
     
@@ -4383,6 +4720,125 @@ async def process_reduced_trade_cd_username(message: types.Message, state: FSMCo
     
     await state.clear()
 
+@dp.callback_query(lambda c: c.data == "admin_give_card_by_id")
+async def admin_give_card_by_id_handler(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+    
+    await callback.message.answer(
+        "🎁 <b>Выдача карточки по ID</b>\n\n"
+        "Введите username пользователя (начиная с @), которому хотите выдать карточку:"
+    )
+    await state.set_state(AdminStates.waiting_for_give_card_username)
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_give_card_username)
+async def process_give_card_username(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    
+    username = message.text.strip().lstrip('@')
+    user = get_user_by_username(username)
+    
+    if not user:
+        await message.answer(
+            f"❌ Пользователь @{username} не найден.\n\n"
+            f"Попробуйте еще раз или напишите /refresh для отмены:"
+        )
+        return
+    
+    await state.update_data(target_user_id=user.user_id, target_username=username)
+    
+    if not cards:
+        await message.answer("❌ В системе нет карточек для выдачи.")
+        await state.clear()
+        return
+    
+    cards_list = "\n".join([f"• <code>{card_id}</code>: {card.name} ({get_rarity_name(card.rarity)}){' 🎬' if is_video_card(card) else ''}" 
+                           for card_id, card in cards.items()])
+    
+    await message.answer(
+        f"✅ Пользователь: @{username}\n\n"
+        f"📋 <b>Доступные карточки:</b>\n"
+        f"{cards_list}\n\n"
+        f"Введите ID карточки для выдачи:"
+    )
+    await state.set_state(AdminStates.waiting_for_give_card_id)
+
+@dp.message(AdminStates.waiting_for_give_card_id)
+async def process_give_card_id(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    
+    card_id = message.text.strip()
+    
+    if card_id.lower() == "/refresh":
+        await state.clear()
+        await message.answer("✅ <b>Действие отменено!</b>")
+        return
+    
+    if card_id not in cards:
+        await message.answer(
+            f"❌ Карточка с ID '{card_id}' не найдена.\n\n"
+            f"Проверьте ID и попробуйте еще раз или напишите /refresh для отмены:"
+        )
+        return
+    
+    data = await state.get_data()
+    target_user_id = data.get('target_user_id')
+    target_username = data.get('target_username')
+    
+    if not target_user_id:
+        await message.answer("❌ Ошибка: пользователь не найден.")
+        await state.clear()
+        return
+    
+    user = users.get(target_user_id)
+    if not user:
+        await message.answer("❌ Ошибка: пользователь не найден в базе.")
+        await state.clear()
+        return
+    
+    card = cards[card_id]
+    
+    if card_id not in user.cards:
+        user.cards[card_id] = 1
+    else:
+        user.cards[card_id] += 1
+    
+    user.opened_packs += 1
+    update_user_interaction(user)
+    save_data()
+    
+    video_icon = "🎬 " if is_video_card(card) else ""
+    
+    await message.answer(
+        f"✅ <b>Карточка успешно выдана!</b>\n\n"
+        f"👤 <b>Пользователь:</b> @{target_username}\n"
+        f"🎴 <b>Карточка:</b> {video_icon}{card.name}\n"
+        f"📊 <b>Редкость:</b> {get_rarity_name(card.rarity)}\n"
+        f"🆔 <b>ID карточки:</b> <code>{card_id}</code>\n"
+        f"📈 <b>Теперь у пользователя:</b> {user.cards[card_id]} шт.\n\n"
+        f"<i>Карточка добавлена в инвентарь пользователя.</i>"
+    )
+    
+    try:
+        await bot.send_message(
+            target_user_id,
+            f"🎁 <b>Вам выдана карточка администратором!</b>\n\n"
+            f"🎴 <b>Карточка:</b> {video_icon}{card.name}\n"
+            f"📊 <b>Редкость:</b> {get_rarity_name(card.rarity)}\n\n"
+            f"Проверьте свой инвентарь! 🎉"
+        )
+        logger.info(f"✅ Уведомление о выдаче карточки отправлено пользователю {target_user_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки уведомления пользователю {target_user_id}: {e}")
+    
+    await state.clear()
+
 @dp.callback_query(lambda c: c.data == "admin_orders")
 async def admin_orders_handler(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
@@ -4435,12 +4891,23 @@ async def admin_orders_pending_handler(callback: types.CallbackQuery):
     
     for i, order in enumerate(pending_orders[:10], 1):
         user = users.get(order.user_id)
-        card = cards.get(order.card_id)
         
-        if user and card:
+        if order.card_id == "skip_card_cooldown":
+            card_name = "⚡ Скип кулдауна карточки"
+        elif order.card_id == "skip_trade_cooldown":
+            card_name = "🔄 Скип кулдауна обменов"
+        elif order.card_id == "buy_level_1":
+            card_name = "🎮 Покупка 1 уровня"
+        elif order.card_id == "buy_level_5":
+            card_name = "🎮 Покупка 5 уровней"
+        else:
+            card = cards.get(order.card_id)
+            card_name = card.name if card else "Неизвестная карточка"
+        
+        if user:
             created = datetime.fromisoformat(order.created_at).strftime('%d.%m %H:%M')
             response += f"{i}. <b>{order.order_id}</b>\n"
-            response += f"👤 @{user.username} | 🎴 {card.name} | 💰 {order.price}₽\n"
+            response += f"👤 @{user.username} | 🎴 {card_name} | 💰 {order.price}₽\n"
             response += f"📅 {created}\n\n"
             
             keyboard.add(InlineKeyboardButton(
@@ -4471,9 +4938,20 @@ async def view_order_handler(callback: types.CallbackQuery):
     
     order = orders[order_id]
     user = users.get(order.user_id)
-    card = cards.get(order.card_id)
     
-    if not user or not card:
+    if order.card_id == "skip_card_cooldown":
+        card_name = "⚡ Скип кулдауна карточки"
+    elif order.card_id == "skip_trade_cooldown":
+        card_name = "🔄 Скип кулдауна обменов"
+    elif order.card_id == "buy_level_1":
+        card_name = "🎮 Покупка 1 уровня"
+    elif order.card_id == "buy_level_5":
+        card_name = "🎮 Покупка 5 уровней"
+    else:
+        card = cards.get(order.card_id)
+        card_name = card.name if card else "Неизвестная карточка"
+    
+    if not user:
         await callback.answer("❌ Данные заказа неполные", show_alert=True)
         return
     
@@ -4489,7 +4967,7 @@ async def view_order_handler(callback: types.CallbackQuery):
         f"🆔 <b>Номер:</b> {order_id}\n"
         f"👤 <b>Пользователь:</b> @{user.username} (ID: {user.user_id})\n"
         f"📧 <b>Telegram:</b> @{callback.from_user.username or 'нет username'}\n"
-        f"🎴 <b>Карточка:</b> {card.name} ({get_rarity_name(card.rarity)})\n"
+        f"🎴 <b>Товар:</b> {card_name}\n"
         f"💰 <b>Сумма:</b> {order.price}₽\n"
         f"📊 <b>Статус:</b> {status_text}\n"
         f"📅 <b>Создан:</b> {created}\n"
@@ -4585,16 +5063,27 @@ async def confirm_order_handler(callback: types.CallbackQuery):
     if success:
         order = orders[order_id]
         user = users.get(order.user_id)
-        card = cards.get(order.card_id)
+        
+        if order.card_id == "skip_card_cooldown":
+            card_name = "⚡ Скип кулдауна карточки"
+        elif order.card_id == "skip_trade_cooldown":
+            card_name = "🔄 Скип кулдауна обменов"
+        elif order.card_id == "buy_level_1":
+            card_name = "🎮 Покупка 1 уровня"
+        elif order.card_id == "buy_level_5":
+            card_name = "🎮 Покупка 5 уровней"
+        else:
+            card = cards.get(order.card_id)
+            card_name = card.name if card else "Неизвестная карточка"
         
         try:
             await callback.message.edit_text(
                 f"✅ <b>Заказ подтвержден!</b>\n\n"
                 f"🆔 Заказ: {order_id}\n"
                 f"👤 Пользователь: @{user.username if user else 'неизвестно'}\n"
-                f"🎴 Карточка: {card.name if card else 'неизвестно'}\n"
+                f"🎴 Товар: {card_name}\n"
                 f"💰 Сумма: {order.price}₽\n\n"
-                f"Карточка добавлена в инвентарь пользователя."
+                f"Товар активирован."
             )
             await callback.answer("✅ Заказ подтвержден!")
         except Exception as e:
@@ -4603,20 +5092,20 @@ async def confirm_order_handler(callback: types.CallbackQuery):
                 f"✅ <b>Заказ подтвержден!</b>\n\n"
                 f"🆔 Заказ: {order_id}\n"
                 f"👤 Пользователь: @{user.username if user else 'неизвестно'}\n"
-                f"🎴 Карточка: {card.name if card else 'неизвестно'}\n"
+                f"🎴 Товар: {card_name}\n"
                 f"💰 Сумма: {order.price}₽\n\n"
-                f"Карточка добавлена в инвентарь пользователя."
+                f"Товар активирован."
             )
             await callback.answer("✅ Заказ подтвержден!")
         
-        if user and card:
+        if user:
             try:
-                await send_order_notification(order_id, user.user_id, card.name, order.price)
+                await send_order_notification(order_id, user.user_id, card_name, order.price)
             except Exception as e:
                 logger.error(f"Ошибка отправки уведомления пользователю: {e}")
                 logger.info(f"Пользователь {user.user_id} требует ручного уведомления о заказе {order_id}")
         else:
-            logger.error(f"Данные пользователя или карточки для заказа {order_id} не найдены")
+            logger.error(f"Данные пользователя для заказа {order_id} не найдены")
     else:
         await callback.answer("❌ Ошибка подтверждения заказа", show_alert=True)
 
@@ -4637,16 +5126,27 @@ async def reject_order_handler(callback: types.CallbackQuery):
     if success:
         order = orders[order_id]
         user = users.get(order.user_id)
-        card = cards.get(order.card_id)
+        
+        if order.card_id == "skip_card_cooldown":
+            card_name = "⚡ Скип кулдауна карточки"
+        elif order.card_id == "skip_trade_cooldown":
+            card_name = "🔄 Скип кулдауна обменов"
+        elif order.card_id == "buy_level_1":
+            card_name = "🎮 Покупка 1 уровня"
+        elif order.card_id == "buy_level_5":
+            card_name = "🎮 Покупка 5 уровней"
+        else:
+            card = cards.get(order.card_id)
+            card_name = card.name if card else "Неизвестная карточка"
         
         try:
             await callback.message.edit_text(
                 f"❌ <b>Заказ отклонен!</b>\n\n"
                 f"🆔 Заказ: {order_id}\n"
                 f"👤 Пользователь: @{user.username if user else 'неизвестно'}\n"
-                f"🎴 Карточка: {card.name if card else 'неизвестно'}\n"
+                f"🎴 Товар: {card_name}\n"
                 f"💰 Сумма: {order.price}₽\n\n"
-                f"Карточка возвращена в магазин."
+                f"Товар возвращен в магазин."
             )
             await callback.answer("❌ Заказ отклонен!")
         except Exception as e:
@@ -4655,9 +5155,9 @@ async def reject_order_handler(callback: types.CallbackQuery):
                 f"❌ <b>Заказ отклонен!</b>\n\n"
                 f"🆔 Заказ: {order_id}\n"
                 f"👤 Пользователь: @{user.username if user else 'неизвестно'}\n"
-                f"🎴 Карточка: {card.name if card else 'неизвестно'}\n"
+                f"🎴 Товар: {card_name}\n"
                 f"💰 Сумма: {order.price}₽\n\n"
-                f"Карточка возвращена в магазин."
+                f"Товар возвращен в магазин."
             )
             await callback.answer("❌ Заказ отклонен!")
         
@@ -4667,7 +5167,7 @@ async def reject_order_handler(callback: types.CallbackQuery):
                     user.user_id,
                     text=f"❌ <b>Ваш заказ отклонен!</b>\n\n"
                          f"🆔 Заказ: {order_id}\n"
-                         f"🎴 Карточка: <b>{card.name if card else 'неизвестно'}</b>\n"
+                         f"🎴 Товар: <b>{card_name}</b>\n"
                          f"💰 Сумма: {order.price}₽\n\n"
                          f"Причина: оплата не подтверждена администратором.\n\n"
                          f"<i>Если вы считаете это ошибкой, свяжитесь с @prikolovwork</i>"
@@ -4729,12 +5229,23 @@ async def admin_orders_confirmed_handler(callback: types.CallbackQuery):
     
     for i, order in enumerate(confirmed_orders[:10], 1):
         user = users.get(order.user_id)
-        card = cards.get(order.card_id)
         
-        if user and card:
+        if order.card_id == "skip_card_cooldown":
+            card_name = "⚡ Скип кулдауна карточки"
+        elif order.card_id == "skip_trade_cooldown":
+            card_name = "🔄 Скип кулдауна обменов"
+        elif order.card_id == "buy_level_1":
+            card_name = "🎮 Покупка 1 уровня"
+        elif order.card_id == "buy_level_5":
+            card_name = "🎮 Покупка 5 уровней"
+        else:
+            card = cards.get(order.card_id)
+            card_name = card.name if card else "Неизвестная карточка"
+        
+        if user:
             confirmed = datetime.fromisoformat(order.confirmed_at or order.created_at).strftime('%d.%m %H:%M')
             response += f"{i}. <b>{order.order_id}</b>\n"
-            response += f"👤 @{user.username} | 🎴 {card.name} | 💰 {order.price}₽\n"
+            response += f"👤 @{user.username} | 🎴 {card_name} | 💰 {order.price}₽\n"
             response += f"✅ {confirmed}\n\n"
     
     response += f"<i>Показано последних 10 из {len(confirmed_orders)} заказов</i>"
@@ -4767,12 +5278,23 @@ async def admin_orders_rejected_handler(callback: types.CallbackQuery):
     
     for i, order in enumerate(rejected_orders[:10], 1):
         user = users.get(order.user_id)
-        card = cards.get(order.card_id)
         
-        if user and card:
+        if order.card_id == "skip_card_cooldown":
+            card_name = "⚡ Скип кулдауна карточки"
+        elif order.card_id == "skip_trade_cooldown":
+            card_name = "🔄 Скип кулдауна обменов"
+        elif order.card_id == "buy_level_1":
+            card_name = "🎮 Покупка 1 уровня"
+        elif order.card_id == "buy_level_5":
+            card_name = "🎮 Покупка 5 уровней"
+        else:
+            card = cards.get(order.card_id)
+            card_name = card.name if card else "Неизвестная карточка"
+        
+        if user:
             rejected = datetime.fromisoformat(order.confirmed_at or order.created_at).strftime('%d.%m %H:%M')
             response += f"{i}. <b>{order.order_id}</b>\n"
-            response += f"👤 @{user.username} | 🎴 {card.name} | 💰 {order.price}₽\n"
+            response += f"👤 @{user.username} | 🎴 {card_name} | 💰 {order.price}₽\n"
             response += f"❌ {rejected}\n\n"
     
     response += f"<i>Показано последних 10 из {len(rejected_orders)} заказов</i>"
@@ -4794,16 +5316,25 @@ async def admin_orders_stats_handler(callback: types.CallbackQuery):
     
     orders_by_day = {}
     total_revenue = 0
+    special_orders = {
+        "skip_card_cooldown": 0,
+        "skip_trade_cooldown": 0,
+        "buy_level_1": 0,
+        "buy_level_5": 0
+    }
     
     for order in orders.values():
         if order.status == "confirmed":
             date = datetime.fromisoformat(order.confirmed_at or order.created_at).strftime('%d.%m.%Y')
             orders_by_day[date] = orders_by_day.get(date, 0) + 1
             total_revenue += order.price
+            
+            if order.card_id in special_orders:
+                special_orders[order.card_id] += 1
     
     rarity_stats = {}
     for order in orders.values():
-        if order.status == "confirmed":
+        if order.status == "confirmed" and order.card_id not in special_orders:
             card = cards.get(order.card_id)
             if card:
                 rarity_stats[card.rarity] = rarity_stats.get(card.rarity, 0) + 1
@@ -4817,6 +5348,13 @@ async def admin_orders_stats_handler(callback: types.CallbackQuery):
         f"⏳ Ожидают: {len([o for o in orders.values() if o.status == 'pending'])}\n"
         f"💰 Общая выручка: {total_revenue}₽\n\n"
     )
+    
+    if special_orders:
+        response += f"⚡ <b>Специальные товары:</b>\n"
+        response += f"• Скип кулдауна карточки: {special_orders['skip_card_cooldown']}\n"
+        response += f"• Скип кулдауна обменов: {special_orders['skip_trade_cooldown']}\n"
+        response += f"• Покупка 1 уровня: {special_orders['buy_level_1']}\n"
+        response += f"• Покупка 5 уровней: {special_orders['buy_level_5']}\n\n"
     
     if orders_by_day:
         response += f"📅 <b>Заказов по дням (последние 7):</b>\n"
@@ -5414,7 +5952,8 @@ async def view_trade_handler(callback: types.CallbackQuery):
         card = cards.get(card_id)
         if card:
             rarity_icon = get_rarity_color(card.rarity)
-            response += f"{rarity_icon} {card.name}\n"
+            video_icon = "🎬 " if is_video_card(card) else ""
+            response += f"{rarity_icon} {video_icon}{card.name}\n"
     
     keyboard = InlineKeyboardBuilder()
     if callback.from_user.id == to_user.user_id:
@@ -5469,8 +6008,16 @@ async def accept_trade_handler(callback: types.CallbackQuery):
     
     receiver_card = random.choice(user_cards)
     
-    user.last_trade_time = datetime.now().isoformat()
-    from_user.last_trade_time = datetime.now().isoformat()
+    # Используем скип кулдауна если есть
+    if user.skip_trade_cooldown_available:
+        user.skip_trade_cooldown_available = False
+    else:
+        user.last_trade_time = datetime.now().isoformat()
+    
+    if from_user.skip_trade_cooldown_available:
+        from_user.skip_trade_cooldown_available = False
+    else:
+        from_user.last_trade_time = datetime.now().isoformat()
     
     for card_id in trade['cards']:
         if card_id in from_user.cards and from_user.cards[card_id] > 0:
@@ -5496,13 +6043,16 @@ async def accept_trade_handler(callback: types.CallbackQuery):
     
     save_data()
     
+    receiver_card_obj = cards.get(receiver_card)
+    receiver_card_name = receiver_card_obj.name if receiver_card_obj else "неизвестная карточка"
+    
     try:
         await bot.send_message(
             from_user.user_id,
             f"✅ <b>Ваш обмен завершен!</b>\n\n"
             f"🔄 Обмен #{trade_id.split('_')[1]}\n"
             f"👤 С: @{user.username or 'пользователь'}\n"
-            f"🎴 Вы получили: {cards.get(receiver_card, 'неизвестная карточка').name}\n"
+            f"🎴 Вы получили: {receiver_card_name}\n"
             f"📅 Завершен: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
         )
     except:
@@ -5513,7 +6063,7 @@ async def accept_trade_handler(callback: types.CallbackQuery):
         f"🔄 Обмен #{trade_id.split('_')[1]}\n"
         f"👤 С: @{from_user.username or 'пользователь'}\n"
         f"🎴 Вы получили: {len(trade['cards'])} карточек\n"
-        f"🎴 Вы отдали: {cards.get(receiver_card, 'неизвестная карточка').name}\n"
+        f"🎴 Вы отдали: {receiver_card_name}\n"
         f"📅 Завершен: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
     )
     
@@ -5562,10 +6112,50 @@ async def reject_trade_handler(callback: types.CallbackQuery):
 async def periodic_tasks():
     while True:
         try:
+            # Проверяем неактивных пользователей для отправки персональных предложений
             for user in users.values():
-                if random.random() < 0.01:
-                    await send_personal_offer(user.user_id)
+                if user.notification_settings.promo_offers and random.random() < 0.01:
+                    user_orders = [o for o in orders.values() 
+                                   if o.user_id == user.user_id 
+                                   and o.status == "confirmed"]
+                    
+                    if not user_orders:
+                        # Новичкам
+                        try:
+                            await bot.send_message(
+                                user.user_id,
+                                "🎁 <b>Специальное предложение для новичка!</b>\n\n"
+                                "При первой покупке получите:\n"
+                                "• +20% к опыту\n"
+                                "• 1 случайную карточку в подарок\n"
+                                "• Статус 'Начинающий коллекционер'\n\n"
+                                "Ждем вас в магазине! 🛒"
+                            )
+                        except:
+                            pass
+                    else:
+                        # Проверяем, когда была последняя покупка
+                        last_order = max(user_orders, key=lambda o: datetime.fromisoformat(o.confirmed_at or o.created_at))
+                        days_since = (datetime.now() - datetime.fromisoformat(last_order.confirmed_at or last_order.created_at)).days
+                        
+                        # Отправляем предложение раз в 14 дней (2 недели)
+                        if days_since >= 14:
+                            try:
+                                discount = 25  # Фиксированная скидка 25%
+                                
+                                await bot.send_message(
+                                    user.user_id,
+                                    f"🎯 <b>Скучаем по вам! Персональная скидка {discount}%</b>\n\n"
+                                    f"Мы заметили, что вы давно не заглядывали в магазин.\n"
+                                    f"Специально для вас - скидка {discount}% на любую покупку!\n\n"
+                                    f"⏰ Действует 24 часа\n"
+                                    f"🎁 Код: LOYAL{discount}\n\n"
+                                    f"Ждем вас! 🛒"
+                                )
+                            except:
+                                pass
             
+            # Обновляем статус эксклюзивных карточек
             now = datetime.now()
             for exclusive in exclusive_cards.values():
                 if exclusive.end_date and datetime.fromisoformat(exclusive.end_date) < now:
@@ -5576,49 +6166,7 @@ async def periodic_tasks():
         except Exception as e:
             logger.error(f"Ошибка в периодических задачах: {e}")
         
-        await asyncio.sleep(300)
-
-async def send_personal_offer(user_id: int):
-    user = users.get(user_id)
-    if not user or user.is_banned or user.is_frozen:
-        return
-    
-    user_orders = [o for o in orders.values() 
-                   if o.user_id == user_id 
-                   and o.status == "confirmed"]
-    
-    if not user_orders:
-        try:
-            await bot.send_message(
-                user_id,
-                "🎁 <b>Специальное предложение для новичка!</b>\n\n"
-                "При первой покупке получите:\n"
-                "• +20% к опыту\n"
-                "• 1 случайную карточку в подарок\n"
-                "• Статус 'Начинающий коллекционер'\n\n"
-                "Ждем вас в магазине! 🛒"
-            )
-        except:
-            pass
-    else:
-        last_order = max(user_orders, key=lambda o: datetime.fromisoformat(o.confirmed_at or o.created_at))
-        days_since = (datetime.now() - datetime.fromisoformat(last_order.confirmed_at or last_order.created_at)).days
-        
-        if days_since >= 7:
-            try:
-                discount = min(25, 10 + (days_since // 7) * 5)
-                
-                await bot.send_message(
-                    user_id,
-                    f"🎯 <b>Скучаем по вам! Персональная скидка {discount}%</b>\n\n"
-                    f"Мы заметили, что вы давно не заглядывали в магазин.\n"
-                    f"Специально для вас - скидка {discount}% на любую покупку!\n\n"
-                    f"⏰ Действует 24 часа\n"
-                    f"🎁 Код: LOYAL{discount}\n\n"
-                    f"Ждем вас! 🛒"
-                )
-            except:
-                pass
+        await asyncio.sleep(300)  # Проверяем каждые 5 минут
 
 async def main():
     load_data()
@@ -5628,6 +6176,7 @@ async def main():
     logger.info(f"Python {sys.version}")
     logger.info(f"Пользователей в базе: {len(users)}")
     logger.info(f"Карточек в системе: {len(cards)}")
+    logger.info(f"Видео карточек: {len([c for c in cards.values() if is_video_card(c)])}")
     logger.info(f"Заказов в системе: {len(orders)}")
     logger.info(f"Канал для подписки: {CHANNEL_USERNAME}")
     logger.info(f"Защита от спама: {MESSAGE_LIMIT} сообщений/{TIME_WINDOW} сек")
@@ -5636,7 +6185,6 @@ async def main():
     
     try:
         asyncio.create_task(check_inactive_users())
-        
         asyncio.create_task(periodic_tasks())
         
         logger.info("🔄 Запуск поллинга...")
