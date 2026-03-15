@@ -1,14 +1,20 @@
 {
-  "card_1770173173": {
-    "price": 99,
-    "expires_at": "2026-02-07T01:26:46.633334"
+  "card_1769928301": {
+    "price": 30,
+    "expires_at": "2026-03-16T01:09:23.392639",
+    "original_price": 53,
+    "flash_sale_until": "2026-03-15T15:51:36.585757"
   },
-  "card_1770174612": {
-    "price": 99,
-    "expires_at": "2026-02-07T01:26:46.633334"
+  "card_1770173277": {
+    "price": 39,
+    "expires_at": "2026-03-16T01:09:44.937905",
+    "original_price": 53,
+    "flash_sale_until": "2026-03-15T14:32:10.389231"
   },
-  "card_1770171929": {
-    "price": 99,
-    "expires_at": "2026-02-07T01:26:46.633334"
+  "card_1770172944": {
+    "price": 93,
+    "expires_at": "2026-03-16T01:09:44.937905",
+    "original_price": 93,
+    "flash_sale_until": null
   }
 }

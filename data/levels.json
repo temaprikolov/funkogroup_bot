@@ -1,8 +1,8 @@
 {
   "8033943956": {
-    "level": 2,
-    "experience": 29,
-    "total_exp_earned": 129,
+    "level": 3,
+    "experience": 19,
+    "total_exp_earned": 269,
     "secret_total_spent": 18
   },
   "7727571734": {
@@ -225,6 +225,12 @@
     "level": 2,
     "experience": 0,
     "total_exp_earned": 100,
+    "secret_total_spent": 0
+  },
+  "8783170508": {
+    "level": 1,
+    "experience": 0,
+    "total_exp_earned": 0,
     "secret_total_spent": 0
   }
 }
