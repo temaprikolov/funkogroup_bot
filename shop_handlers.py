@@ -8,8 +8,10 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 
+from aiogram.filters import StateFilter
 from config import *
 from models import Order
+from states import ShopStates
 
 shop_router = Router()
 router = shop_router   # ← КРИТИЧЕСКИЙ ФИКС
@@ -276,20 +278,20 @@ async def shop_gift_select_handler(callback: types.CallbackQuery, state: FSMCont
     await callback.message.answer(
         "🎁 <b>Подарок</b>\n\nВведите @username получателя подарка:"
     )
-    from states import ShopStates
     await state.set_state(ShopStates.entering_gift_username)
     await callback.answer()
 
 
-@router.message(F.text)
+# ══════════════════════════════════════════
+# ИСПРАВЛЕНО: StateFilter вместо F.text без фильтра.
+# Старый @router.message(F.text) без StateFilter перехватывал ВСЕ текстовые
+# сообщения (🔄 Обмен, 🎪 Эксклюзивы, /admin и т.д.), ломая все роутеры
+# зарегистрированные после shop_router.
+# ══════════════════════════════════════════
+@router.message(StateFilter(ShopStates.entering_gift_username))
 async def shop_gift_username_handler(message: types.Message, state: FSMContext):
-    from states import ShopStates
-    current = await state.get_state()
-    if current != ShopStates.entering_gift_username:
-        return False  # не наше — пропускаем
-
-    username = message.text.strip().lstrip('@')
-    if username.lower() in ["/refresh", "отмена", "cancel"]:
+    username = message.text.strip().lstrip('@') if message.text else ""
+    if not username or username.lower() in ["/refresh", "отмена", "cancel"]:
         await state.clear(); await message.answer("✅ Отменено."); return
 
     recipient = None
@@ -300,12 +302,41 @@ async def shop_gift_username_handler(message: types.Message, state: FSMContext):
         await message.answer(f"❌ @{username} не найден в системе. Попробуйте ещё:"); return
 
     data = await state.get_data()
+    user = get_or_create_user(message.from_user.id)
+
+    # ── Подарок эксклюзива ─────────────────────
+    excl_id = data.get('gift_excl_id')
+    if excl_id:
+        exc = exclusive_cards.get(excl_id) if exclusive_cards else None
+        card = cards.get(excl_id)
+        if not exc or not card or not exc.can_purchase():
+            await message.answer("❌ Эксклюзив больше не доступен."); await state.clear(); return
+        dp = get_price_with_discount(exc.price, user.level)
+        name = f"🎪 {get_rarity_color(card.rarity)} {card.name} (ЭКСКЛЮЗИВ)"
+        order_id = f"excl_gift_{int(datetime.now().timestamp())}_{random.randint(1000,9999)}"
+        order = Order(order_id, user.user_id, excl_id, dp, gift_to_user_id=recipient.user_id)
+        orders[order_id] = order
+        save_data()
+        await message.answer(
+            f"✅ <b>Заказ-подарок (эксклюзив) создан!</b>\n\n"
+            f"🎁 {name}\n👤 Получатель: @{recipient.username}\n"
+            f"💰 {dp}₽\n🆔 <code>{order_id}</code>\n\n"
+            f"Отправьте скриншот оплаты через /payment."
+        )
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id,
+                    f"🎁 Подарок (эксклюзив)!\n🆔 {order_id}\n👤 От: @{user.username} → @{recipient.username}\n🎴 {name}\n💰 {dp}₽")
+            except: pass
+        await state.clear()
+        return
+
+    # ── Подарок обычного товара из магазина ────
     card_id = data.get('gift_card_id')
     if not card_id or card_id not in shop_items:
         await message.answer("❌ Товар больше не доступен."); await state.clear(); return
 
     item = shop_items[card_id]
-    user = get_or_create_user(message.from_user.id)
     dp = get_price_with_discount(item.price, user.level)
     card = cards.get(card_id)
     name = f"{get_rarity_color(card.rarity)} {card.name}" if card else card_id

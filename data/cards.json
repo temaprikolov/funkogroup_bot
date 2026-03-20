@@ -1,0 +1,247 @@
+{
+  "card_1769928301": {
+    "name": "Stranger Things - Vecna",
+    "rarity": "basic",
+    "image_filename": "card_1769928300.jpg"
+  },
+  "card_1769928324": {
+    "name": "Stranger Things - Vecna",
+    "rarity": "cool",
+    "image_filename": "card_1769928322.jpg"
+  },
+  "card_1769928349": {
+    "name": "Stranger Things - Vecna",
+    "rarity": "legendary",
+    "image_filename": "card_1769928348.jpg"
+  },
+  "card_1769928370": {
+    "name": "Stranger Things - Vecna",
+    "rarity": "vinyl",
+    "image_filename": "card_1769928369.jpg"
+  },
+  "card_1769966225": {
+    "name": "CatDog 😼🐶",
+    "rarity": "basic",
+    "image_filename": "card_1769966223.jpg"
+  },
+  "card_1769966303": {
+    "name": "CatDog 😼🐶",
+    "rarity": "cool",
+    "image_filename": "card_1769966302.jpg"
+  },
+  "card_1769966325": {
+    "name": "CatDog 😼🐶",
+    "rarity": "legendary",
+    "image_filename": "card_1769966324.jpg"
+  },
+  "card_1769966401": {
+    "name": "CatDog 😼🐶",
+    "rarity": "vinyl",
+    "image_filename": "card_1769966399.jpg"
+  },
+  "card_1769966821": {
+    "name": "Cinnamoroll",
+    "rarity": "basic",
+    "image_filename": "card_1769966820.jpg"
+  },
+  "card_1769966853": {
+    "name": "Cinnamoroll",
+    "rarity": "cool",
+    "image_filename": "card_1769966852.jpg"
+  },
+  "card_1769966881": {
+    "name": "Cinnamoroll",
+    "rarity": "legendary",
+    "image_filename": "card_1769966880.jpg"
+  },
+  "card_1769971905": {
+    "name": "Pajama Bob",
+    "rarity": "basic",
+    "image_filename": "card_1769971904.jpg"
+  },
+  "card_1769971921": {
+    "name": "Pajama Bob",
+    "rarity": "cool",
+    "image_filename": "card_1769971920.jpg"
+  },
+  "card_1769971954": {
+    "name": "Pajama Bob",
+    "rarity": "legendary",
+    "image_filename": "card_1769971952.jpg"
+  },
+  "card_1769971981": {
+    "name": "Pajama Bob",
+    "rarity": "vinyl",
+    "image_filename": "card_1769971980.jpg"
+  },
+  "card_1770171929": {
+    "name": "27theory 🐶",
+    "rarity": "basic",
+    "image_filename": "card_1770171928.jpg"
+  },
+  "card_1770171955": {
+    "name": "27theory 🐶",
+    "rarity": "cool",
+    "image_filename": "card_1770171954.jpg"
+  },
+  "card_1770172004": {
+    "name": "27theory 🐶",
+    "rarity": "legendary",
+    "image_filename": "card_1770172003.jpg"
+  },
+  "card_1770172021": {
+    "name": "27theory 🐶",
+    "rarity": "vinyl",
+    "image_filename": "card_1770172021.jpg"
+  },
+  "card_1770172651": {
+    "name": "PopMart - Labubu✨",
+    "rarity": "vinyl",
+    "image_filename": "card_1770172650.jpg"
+  },
+  "card_1770172782": {
+    "name": "SpongeBob SquarePants - Patrick Star",
+    "rarity": "basic",
+    "image_filename": "card_1770172781.jpg"
+  },
+  "card_1770172802": {
+    "name": "SpongeBob SquarePants - Patrick Star",
+    "rarity": "cool",
+    "image_filename": "card_1770172801.jpg"
+  },
+  "card_1770172823": {
+    "name": "SpongeBob SquarePants - Patrick Star",
+    "rarity": "legendary",
+    "image_filename": "card_1770172822.jpg"
+  },
+  "card_1770172844": {
+    "name": "SpongeBob SquarePants - Patrick Star",
+    "rarity": "vinyl",
+    "image_filename": "card_1770172843.jpg"
+  },
+  "card_1770172919": {
+    "name": "Gravity Falls - Waddles",
+    "rarity": "basic",
+    "image_filename": "card_1770172918.jpg"
+  },
+  "card_1770172944": {
+    "name": "Gravity Falls - Waddles",
+    "rarity": "cool",
+    "image_filename": "card_1770172943.jpg"
+  },
+  "card_1770172961": {
+    "name": "Gravity Falls - Waddles",
+    "rarity": "legendary",
+    "image_filename": "card_1770172960.jpg"
+  },
+  "card_1770172988": {
+    "name": "Gravity Falls - Waddles",
+    "rarity": "vinyl",
+    "image_filename": "card_1770172987.jpg"
+  },
+  "card_1770173074": {
+    "name": "Twenty One Pilots",
+    "rarity": "basic",
+    "image_filename": "card_1770173072.jpg"
+  },
+  "card_1770173095": {
+    "name": "Twenty One Pilots",
+    "rarity": "cool",
+    "image_filename": "card_1770173094.jpg"
+  },
+  "card_1770173120": {
+    "name": "Twenty One Pilots",
+    "rarity": "legendary",
+    "image_filename": "card_1770173119.jpg"
+  },
+  "card_1770173139": {
+    "name": "Twenty One Pilots",
+    "rarity": "vinyl",
+    "image_filename": "card_1770173138.jpg"
+  },
+  "card_1770173173": {
+    "name": "Gravity Falls - Bill Cipher",
+    "rarity": "basic",
+    "image_filename": "card_1770173172.jpg"
+  },
+  "card_1770173198": {
+    "name": "Gravity Falls - Bill Cipher",
+    "rarity": "cool",
+    "image_filename": "card_1770173197.jpg"
+  },
+  "card_1770173216": {
+    "name": "Gravity Falls - Bill Cipher",
+    "rarity": "legendary",
+    "image_filename": "card_1770173215.jpg"
+  },
+  "card_1770173239": {
+    "name": "Gravity Falls - Bill Cipher",
+    "rarity": "vinyl",
+    "image_filename": "card_1770173238.jpg"
+  },
+  "card_1770173277": {
+    "name": "Hello Kitty",
+    "rarity": "basic",
+    "image_filename": "card_1770173275.jpg"
+  },
+  "card_1770173294": {
+    "name": "Hello Kitty",
+    "rarity": "cool",
+    "image_filename": "card_1770173293.jpg"
+  },
+  "card_1770173312": {
+    "name": "Hello Kitty",
+    "rarity": "legendary",
+    "image_filename": "card_1770173311.jpg"
+  },
+  "card_1770173332": {
+    "name": "Hello Kitty",
+    "rarity": "vinyl",
+    "image_filename": "card_1770173332.jpg"
+  },
+  "card_1770173357": {
+    "name": "FUNKO CARD - FOUNDERS 🏜",
+    "rarity": "vinyl",
+    "image_filename": "card_1770173357.jpg"
+  },
+  "card_1770173423": {
+    "name": "Gravity Falls - Grunkle Stan",
+    "rarity": "basic",
+    "image_filename": "card_1770173422.jpg"
+  },
+  "card_1770173440": {
+    "name": "Gravity Falls - Grunkle Stan",
+    "rarity": "cool",
+    "image_filename": "card_1770173439.jpg"
+  },
+  "card_1770173456": {
+    "name": "Gravity Falls - Grunkle Stan",
+    "rarity": "legendary",
+    "image_filename": "card_1770173455.jpg"
+  },
+  "card_1770173472": {
+    "name": "Gravity Falls - Grunkle Stan",
+    "rarity": "vinyl",
+    "image_filename": "card_1770173471.jpg"
+  },
+  "card_1770174612": {
+    "name": "Kung Fu Panda - Po",
+    "rarity": "basic",
+    "image_filename": "card_1770174611.jpg"
+  },
+  "card_1770174632": {
+    "name": "Kung Fu Panda - Po",
+    "rarity": "cool",
+    "image_filename": "card_1770174631.jpg"
+  },
+  "card_1770174653": {
+    "name": "Kung Fu Panda - Po",
+    "rarity": "legendary",
+    "image_filename": "card_1770174652.jpg"
+  },
+  "card_1770174677": {
+    "name": "Kung Fu Panda - Po",
+    "rarity": "vinyl",
+    "image_filename": "card_1770174676.jpg"
+  }
+}

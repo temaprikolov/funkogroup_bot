@@ -1765,9 +1765,7 @@ async def top_collection_percentage_handler(callback: types.CallbackQuery):
         medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}."
         r += f"{medal} @{u.username}: {pct:.1f}%\n"
     await callback.answer()
-    await callback.answer()
-    await callback.answer()
-    await callback.message.answer(r); await callback.answer()
+    await callback.message.answer(r)
 
 @dp.callback_query(lambda c: c.data == "top_unique_cards")
 async def top_unique_cards_handler(callback: types.CallbackQuery):
@@ -1778,9 +1776,7 @@ async def top_unique_cards_handler(callback: types.CallbackQuery):
         medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}."
         r += f"{medal} @{u.username}: {len(u.cards)}\n"
     await callback.answer()
-    await callback.answer()
-    await callback.answer()
-    await callback.message.answer(r); await callback.answer()
+    await callback.message.answer(r)
 
 @dp.callback_query(lambda c: c.data == "top_total_cards")
 async def top_total_cards_handler(callback: types.CallbackQuery):
@@ -1791,9 +1787,7 @@ async def top_total_cards_handler(callback: types.CallbackQuery):
         medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}."
         r += f"{medal} @{u.username}: {sum(u.cards.values())}\n"
     await callback.answer()
-    await callback.answer()
-    await callback.answer()
-    await callback.message.answer(r); await callback.answer()
+    await callback.message.answer(r)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1834,14 +1828,17 @@ async def periodic_tasks():
             # Каждый час — секретный магазин + ивенты
             if tick % 60 == 0:
                 await maybe_send_secret_shop_notification()
+                import events as _ev_mod
                 if current_weekly_event:
-                    from events import check_and_rotate_weekly_event, setup_events, new_weekly_event
                     if datetime.now() >= datetime.fromisoformat(current_weekly_event.end_time):
-                        await check_and_rotate_weekly_event()
+                        await _ev_mod.check_and_rotate_weekly_event()
+                        # Синхронизируем обновлённый ивент обратно в main.py
+                        current_weekly_event = _ev_mod.current_weekly_event
                 if current_referral_contest:
-                    from events import check_and_rotate_referral_contest
                     if datetime.now() >= datetime.fromisoformat(current_referral_contest.end_time):
-                        await check_and_rotate_referral_contest()
+                        await _ev_mod.check_and_rotate_referral_contest()
+                        # Синхронизируем обновлённый конкурс обратно в main.py
+                        current_referral_contest = _ev_mod.current_referral_contest
             if tick % 5 == 0:  # Сохраняем каждые 5 минут
                 save_data()
         except Exception as e:
