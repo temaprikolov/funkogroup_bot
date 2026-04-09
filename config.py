@@ -1,6 +1,12 @@
 # config.py
-BOT_TOKEN = "8280702499:AAEScyLnr4z5wW84vOElGrTBmDy3fgOFRck"
-ADMIN_IDS = [8033943956, 7571242177]
+import os
+
+# BUG FIX: Read sensitive values from environment variables first;
+# fall back to hardcoded values for local dev only.
+# In production: set BOT_TOKEN and ADMIN_IDS env variables.
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8498772521:AAFU8WO2jAJ-E9eabRtgrzSPw1VcF6J-Yq8")
+_admin_env = os.environ.get("ADMIN_IDS", "")
+ADMIN_IDS = [int(x) for x in _admin_env.split(",") if x.strip().isdigit()] or [8033943956, 7571242177]
 
 PREMIUM_COST = 143
 REDUCED_CD_COST = 127

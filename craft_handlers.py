@@ -107,7 +107,9 @@ async def craft_menu(message: types.Message):
     )
 
 
-@craft_router.callback_query(lambda c: c.data.startswith("craft_"))
+@craft_router.callback_query(lambda c: c.data.startswith("craft_") 
+    and not c.data.startswith("craft_confirm_") 
+    and c.data != "craft_back")
 async def craft_recipe_handler(callback: types.CallbackQuery):
     recipe_key = callback.data.replace("craft_", "")
     recipe = CRAFT_RECIPES.get(recipe_key)
@@ -168,8 +170,15 @@ async def craft_recipe_handler(callback: types.CallbackQuery):
 
 @craft_router.callback_query(lambda c: c.data == "craft_back")
 async def craft_back_handler(callback: types.CallbackQuery):
-    await callback.message.delete()
-    await craft_menu(callback.message)
+    # Создаём объект сообщения для craft_menu
+    class FakeMessage:
+        def __init__(self, from_user, chat):
+            self.from_user = from_user
+            self.chat = chat
+            self.text = "⚗️ Прокачка"
+    
+    fake_msg = FakeMessage(callback.from_user, callback.message.chat)
+    await craft_menu(fake_msg)
     await callback.answer()
 
 
@@ -229,6 +238,12 @@ async def craft_confirm_handler(callback: types.CallbackQuery):
         new_card_id = random.choice(target_cards)
         new_card = cards[new_card_id]
         user.cards[new_card_id] = user.cards.get(new_card_id, 0) + 1
+        
+        # ── Достижения (счётчики) ──────────────────────────────────────────────────
+        user.total_crafts = getattr(user, 'total_crafts', 0) + 1
+        if to_rarity == "legendary":
+            user.total_crafted_legendary = getattr(user, 'total_crafted_legendary', 0) + 1
+        
         save_data()
         rarity_icon = get_rarity_color(to_rarity)
         await callback.message.edit_text(
@@ -238,6 +253,8 @@ async def craft_confirm_handler(callback: types.CallbackQuery):
             f"<i>Карточка добавлена в ваш инвентарь!</i>"
         )
     else:
+        # ── Достижения (счётчики даже при неудаче) ─────────────────────────────────
+        user.total_crafts = getattr(user, 'total_crafts', 0) + 1
         save_data()
         await callback.message.edit_text(
             f"⚗️ <b>Крафт провалился...</b> 💨\n\n"

@@ -84,6 +84,8 @@ async def game_lucky_dice_handler(callback: types.CallbackQuery):
     # Выдаём награду
     user.tokens += dice_value
     user.last_lucky_dice_time = datetime.now().isoformat()
+    # BUG FIX: track token earnings for collect_tokens weekly event
+    add_event_score(user.user_id, "collect_tokens", dice_value)
     save_data()
     await callback.message.answer(
         f"🎲 <b>Кубик удачи!</b>\n\n"
@@ -837,11 +839,16 @@ async def determine_game_winner(challenge_id: str):
     else:  # token
         if result == "challenger_win":
             user1.tokens += challenge.bet_amount * 2
+            # BUG FIX: track token winnings for collect_tokens event
+            add_event_score(challenge.challenger_id, "collect_tokens", challenge.bet_amount * 2)
         elif result == "opponent_win":
             user2.tokens += challenge.bet_amount * 2
+            add_event_score(challenge.opponent_id, "collect_tokens", challenge.bet_amount * 2)
         else:
             user1.tokens += challenge.bet_amount
             user2.tokens += challenge.bet_amount
+            add_event_score(challenge.challenger_id, "collect_tokens", challenge.bet_amount)
+            add_event_score(challenge.opponent_id, "collect_tokens", challenge.bet_amount)
 
     save_data()
 

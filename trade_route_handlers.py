@@ -296,7 +296,11 @@ async def trade_give_card_handler(callback: types.CallbackQuery):
     else: from_user.last_trade_time = datetime.now().isoformat()
     t['status'] = 'completed'; t['receiver_card'] = receiver_card_id
     t['completed_at'] = datetime.now().isoformat()
-    add_experience(user, 'trade_complete'); add_experience(from_user, 'trade_complete')
+    # BUG FIX: total_trades was never incremented — trade achievements could never unlock
+    user.total_trades = getattr(user, 'total_trades', 0) + 1
+    from_user.total_trades = getattr(from_user, 'total_trades', 0) + 1
+    add_experience(user, 'trade_complete', auto_save=False)
+    add_experience(from_user, 'trade_complete', auto_save=False)
     update_user_interaction(user); update_user_interaction(from_user)
     save_data()
     given = [f"{get_rarity_color(cards[ci].rarity)} {cards[ci].name}" for ci in t['cards'] if ci in cards]
@@ -396,6 +400,8 @@ async def gift_process_username(message: types.Message, state: FSMContext):
     user.cards[cid] -= 1
     if user.cards[cid] <= 0: del user.cards[cid]
     partner.cards[cid] = partner.cards.get(cid, 0) + 1
+    # BUG FIX: total_gifts was never incremented — gift achievements could never unlock
+    user.total_gifts = getattr(user, 'total_gifts', 0) + 1
     update_user_interaction(user); update_user_interaction(partner)
     save_data()
     icon = get_rarity_color(c.rarity)

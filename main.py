@@ -24,8 +24,24 @@ from games import GameStats, GameChallenge, FortuneWheel, DailyWheel, determine_
 from promo import PromoCodeManager
 from states import AdminStates, TradeStates, OrderStates, GameStates, WheelBuyState
 from models import (NotificationSettings, User, Card, ShopItem, Order, ExclusiveCard,
-                    WeeklyEvent, ReferralContest)
+                    WeeklyEvent, ReferralContest, MarketListing, MARKET_LISTING_DAYS,
+                    MARKET_FEE_PCT, MARKET_MIN_PRICE, MARKET_MAX_PRICE)
 from aiogram.types import LabeledPrice
+
+# ── НОВЫЕ ИМПОРТЫ ИЗ features.py ──────────────────────────────────────────────
+from features import (
+    update_daily_streak, streak_message, streak_emoji,
+    get_featured_card, is_featured_card, featured_shop_price,
+    featured_card_info, FEATURED_TOKEN_MULTIPLIER,
+    check_and_award_achievements, award_achievement_manual,
+    format_achievements_page,
+    notify_cooldown_ready,
+)
+from market_handlers import market_router, setup_market_handlers, MarketListing, clean_expired_market
+from inventory_addons import (
+    inventory_router, setup_inventory_addons,
+    build_card_view_keyboard, notify_wishlist_match,
+)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -51,6 +67,7 @@ PROMO_FILE = DATA_DIR / "promos.json"
 WHEEL_FILE = DATA_DIR / "wheel.json"
 EVENT_FILE = DATA_DIR / "event.json"
 REFERRAL_CONTEST_FILE = DATA_DIR / "referral_contest.json"
+MARKET_FILE = DATA_DIR / "market.json"
 
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 storage = MemoryStorage()
@@ -73,6 +90,7 @@ promo_manager: Optional[PromoCodeManager] = None
 current_weekly_event: Optional[WeeklyEvent] = None
 current_referral_contest: Optional[ReferralContest] = None
 user_message_times: Dict[int, List] = defaultdict(list)
+market_listings: Dict[str, MarketListing] = {}
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -177,11 +195,10 @@ async def check_subscription(user_id: int) -> bool:
     """Проверяет подписку. При любой ошибке — возвращает True (не блокируем пользователя)."""
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        # "left" и "kicked" — точно не подписан; всё остальное (member, administrator, creator, restricted) — подписан
         return member.status not in ["left", "kicked"]
     except Exception as e:
         logger.warning(f"check_subscription error for {user_id}: {e} — assuming subscribed")
-        return True   # При ошибке не блокируем
+        return True
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -190,7 +207,7 @@ async def check_subscription(user_id: int) -> bool:
 def calculate_level_exp(level: int) -> int:
     return int(LEVEL_SETTINGS['base_exp_per_level'] * (LEVEL_SETTINGS['exp_multiplier'] ** (level - 1)))
 
-def add_experience(user: User, action_type: str, amount: int = None):
+def add_experience(user: User, action_type: str, amount: int = None, auto_save: bool = True):
     if not LEVEL_SETTINGS['enabled']: return
     if amount is None:
         amount = LEVEL_SETTINGS['exp_actions'].get(action_type, 0)
@@ -199,7 +216,9 @@ def add_experience(user: User, action_type: str, amount: int = None):
     while user.experience >= exp_needed and user.level < 100:
         user.experience -= exp_needed; user.level += 1
         exp_needed = calculate_level_exp(user.level)
-    # save_data() убран из add_experience — вызывающий код сохраняет сам
+    # BUG FIX: allow callers to suppress auto-save (e.g. when called in a tight loop)
+    if auto_save:
+        save_data()
 
 def get_cooldown_by_level(user: User, is_premium: bool = None) -> float:
     if is_premium is None: is_premium = user.is_premium
@@ -327,8 +346,17 @@ def add_premium(user: User, days: int = 30):
         user.premium_until = ((until if until > now else now) + timedelta(days=days)).isoformat()
     else:
         user.premium_until = (now + timedelta(days=days)).isoformat()
+    # BUG FIX: open_card previously called save_data() on each iteration (10x writes).
+    # We batch all 10 openings and do a single save at the end.
     for _ in range(10):
-        result = open_card(user)
+        if card_pool:
+            card_id = random.choice(card_pool)
+            card = cards[card_id]
+            user.cards[card_id] = user.cards.get(card_id, 0) + 1
+            user.opened_packs += 1
+            user.tokens += 3  # premium tokens
+    add_experience(user, 'open_card', amount=10 * LEVEL_SETTINGS['exp_actions'].get('open_card', 10), auto_save=False)
+    user.last_card_time = datetime.now().isoformat()
     update_user_interaction(user)
     save_data()
     return True
@@ -390,8 +418,9 @@ def open_card(user: User) -> Optional[Tuple[Card, str]]:
     else:
         user.last_card_time = datetime.now().isoformat()
     user.tokens += 3 if user.is_premium else 1
+    user.cooldown_notified = False  # ← ДОБАВЛЕНО: сброс флага для следующего уведомления
     update_user_interaction(user)
-    add_experience(user, 'open_card')
+    add_experience(user, 'open_card', auto_save=False)  # BUG FIX: save_data called below, skip double save
     # Ивент
     add_event_score(user.user_id, "open_cards")
     if card.rarity == "legendary":
@@ -462,15 +491,16 @@ def update_shop():
         del shop_items[k]
     regular_count = sum(1 for item in shop_items.values() if not item.card_id.startswith('skip_'))
     updated = False
+    attempts = 0  # BUG FIX: limit retries to avoid infinite loop; old code broke out on first duplicate
     while regular_count < 3:
+        attempts += 1
+        if attempts > 50: break  # safety guard
         result = generate_shop_card()
         if not result: break
         cid, price = result
         if cid not in shop_items:
             shop_items[cid] = ShopItem(card_id=cid, price=price, expires_at=(now + timedelta(hours=12)).isoformat())
             regular_count += 1; updated = True
-        else:
-            break
     maybe_add_skip_items_to_shop()
     if updated:
         asyncio.create_task(notify_shop_update())
@@ -479,12 +509,15 @@ def update_shop():
 def apply_flash_discount_to_shop():
     """Применяем случайную флэш-скидку к одному товару."""
     now = datetime.now()
-    regular = [(k, item) for k, item in shop_items.items() if not k.startswith('skip_')]
+    # BUG FIX: pick only items that don't already have an active flash sale
+    regular = [
+        (k, item) for k, item in shop_items.items()
+        if not k.startswith('skip_')
+        and not (hasattr(item, 'flash_sale_until') and item.flash_sale_until
+                 and datetime.fromisoformat(item.flash_sale_until) > now)
+    ]
     if not regular: return
     k, item = random.choice(regular)
-    if hasattr(item, 'flash_sale_until') and item.flash_sale_until:
-        if datetime.fromisoformat(item.flash_sale_until) > now:
-            return  # уже есть флэш
     discount_rub = random.randint(10, DYNAMIC_PRICE_DISCOUNT_MAX)
     duration_min = random.randint(DYNAMIC_PRICE_MIN_MINUTES, DYNAMIC_PRICE_MAX_MINUTES)
     item.original_price = item.price
@@ -510,7 +543,14 @@ def create_order(user: User, card_id: str, price: int, gift_to_user_id: int = No
     order_id = f"order_{int(datetime.now().timestamp())}_{random.randint(1000,9999)}"
     order = Order(order_id, user.user_id, card_id, price, gift_to_user_id=gift_to_user_id)
     orders[order_id] = order
-    if card_id in shop_items and not card_id.startswith('skip_'):
+    # BUG FIX: Skip items have timestamp-suffixed keys (e.g. "skip_card_cooldown_1234567890")
+    # but card_id inside is "skip_card_cooldown". We must find and delete by card_id value, not key.
+    if card_id.startswith('skip_') or card_id in ['buy_level_1', 'buy_level_5']:
+        for k in list(shop_items.keys()):
+            if shop_items[k].card_id == card_id:
+                del shop_items[k]
+                break
+    elif card_id in shop_items and not card_id.startswith('lootbox_'):
         del shop_items[card_id]
     add_experience(user, 'purchase_card', price // 10)
     save_data()
@@ -665,10 +705,12 @@ async def maybe_send_secret_shop_notification():
 async def notify_shop_update():
     try:
         msg = "🛒 <b>МАГАЗИН ОБНОВЛЕН!</b>\n\nПоявились новые карточки! 🎴\n\n"
+        new_card_ids = []
         for cid, item in shop_items.items():
             card = cards.get(cid)
             if card and not cid.startswith('skip_'):
                 msg += f"{get_rarity_color(card.rarity)} {card.name} — {item.price}₽\n"
+                new_card_ids.append(cid)
         msg += "\n⏰ Торопитесь, карточки исчезнут через 12 часов!"
         sent = 0
         for uid, user in users.items():
@@ -679,6 +721,9 @@ async def notify_shop_update():
         try: await bot.send_message(CHANNEL_ID, msg)
         except: pass
         logger.info(f"✅ Уведомления магазина: {sent}")
+        
+        # Уведомляем о карточках из вишлиста
+        await notify_wishlist_match(users, bot, new_card_ids, cards)
     except Exception as e:
         logger.error(f"Ошибка notify_shop_update: {e}")
 
@@ -725,12 +770,14 @@ def get_main_menu(user: User = None):
     kb.add(KeyboardButton(text="🎡 Колесо фортуны"))
     kb.add(KeyboardButton(text="🏆 Топ игроков"))
     kb.add(KeyboardButton(text="⚗️ Прокачка"))
+    kb.add(KeyboardButton(text="🏪 Рынок"))
+    kb.add(KeyboardButton(text="💝 Вишлист"))
     kb.add(KeyboardButton(text="❓ Помощь"))
     # Секретный магазин — динамически
     if user and hasattr(user, 'secret_shop_expires') and user.secret_shop_expires:
         if datetime.fromisoformat(user.secret_shop_expires) > datetime.now():
             kb.add(KeyboardButton(text="🤫МАГАЗИН🤫"))
-    kb.adjust(3, 3, 3, 2)
+    kb.adjust(3, 3, 3, 3, 2)
     return kb.as_markup(resize_keyboard=True)
 
 def get_subscription_keyboard():
@@ -773,6 +820,7 @@ async def show_payment_methods(callback: types.CallbackQuery, product_type: str,
 def load_data():
     global users, cards, card_pool, trades, shop_items, orders, exclusive_cards
     global card_popularity, current_wheel, promo_manager, current_weekly_event, current_referral_contest
+    global market_listings
     try:
         if USERS_FILE.exists():
             with open(USERS_FILE, 'r', encoding='utf-8') as f:
@@ -793,13 +841,27 @@ def load_data():
                         u.game_stats.slots = v.get('slots', u.game_stats.slots)
                     elif hasattr(u, k):
                         setattr(u, k, v)
+                # ── НОВЫЕ ПОЛЯ (не ломает старые данные) ──────────────────────────
+                if not hasattr(u, 'achievements'): u.achievements = {}
+                if not hasattr(u, 'daily_streak'): u.daily_streak = 0
+                if not hasattr(u, 'last_streak_date'): u.last_streak_date = None
+                if not hasattr(u, 'wishlist'): u.wishlist = []
+                if not hasattr(u, 'cooldown_notified'): u.cooldown_notified = False
+                if not hasattr(u, 'total_trades'): u.total_trades = 0
+                if not hasattr(u, 'total_gifts'): u.total_gifts = 0
+                if not hasattr(u, 'total_crafts'): u.total_crafts = 0
+                if not hasattr(u, 'total_crafted_legendary'): u.total_crafted_legendary = 0
+                if not hasattr(u, 'market_sold_count'): u.market_sold_count = 0
+                if not hasattr(u, 'market_bought_count'): u.market_bought_count = 0
                 users[uid] = u
 
         if CARDS_FILE.exists():
             with open(CARDS_FILE, 'r', encoding='utf-8') as f:
                 cd = json.load(f)
             for cid, d in cd.items():
-                cards[cid] = Card(cid, d['name'], d['rarity'], d.get('image_filename',''))
+                cards[cid] = Card(cid, d['name'], d['rarity'], 
+                                  d.get('image_filename',''), 
+                                  d.get('image_file_id', ''))
         else:
             cards["fanco1"] = Card("fanco1", "FUNKO CARD - BASIC", "basic")
 
@@ -877,6 +939,13 @@ def load_data():
             from events import new_referral_contest
             current_referral_contest = new_referral_contest(1)
 
+        # ── ЗАГРУЗКА РЫНКА ──────────────────────────────────────────────────────
+        if MARKET_FILE.exists():
+            with open(MARKET_FILE, 'r', encoding='utf-8') as f:
+                md = json.load(f)
+            for lid, d in md.items():
+                market_listings[lid] = MarketListing.from_dict(d)
+
         promo_manager = PromoCodeManager(PROMO_FILE)
         update_card_pool()
         logger.info(f"✅ Загружено: {len(users)} юзеров, {len(cards)} карточек, {len(orders)} заказов")
@@ -932,14 +1001,30 @@ def save_data():
                 'game_stats': {
                     'rock_paper_scissors': u.game_stats.rock_paper_scissors,
                     'dice': u.game_stats.dice, 'slots': u.game_stats.slots,
-                }
+                },
+                # ── НОВЫЕ ПОЛЯ ДЛЯ СОХРАНЕНИЯ ──────────────────────────────────────
+                'achievements': getattr(u, 'achievements', {}),
+                'daily_streak': getattr(u, 'daily_streak', 0),
+                'last_streak_date': getattr(u, 'last_streak_date', None),
+                'wishlist': getattr(u, 'wishlist', []),
+                'cooldown_notified': getattr(u, 'cooldown_notified', False),
+                'total_trades': getattr(u, 'total_trades', 0),
+                'total_gifts': getattr(u, 'total_gifts', 0),
+                'total_crafts': getattr(u, 'total_crafts', 0),
+                'total_crafted_legendary': getattr(u, 'total_crafted_legendary', 0),
+                'market_sold_count': getattr(u, 'market_sold_count', 0),
+                'market_bought_count': getattr(u, 'market_bought_count', 0),
             }
         with open(USERS_FILE, 'w', encoding='utf-8') as f:
             json.dump(ud, f, ensure_ascii=False, indent=2)
 
+        # Cards с image_file_id
         with open(CARDS_FILE, 'w', encoding='utf-8') as f:
-            json.dump({cid: {'name': c.name, 'rarity': c.rarity, 'image_filename': c.image_filename}
-                       for cid, c in cards.items()}, f, ensure_ascii=False, indent=2)
+            json.dump({cid: {
+                'name': c.name, 'rarity': c.rarity,
+                'image_filename': c.image_filename,
+                'image_file_id': getattr(c, 'image_file_id', ''),
+            } for cid, c in cards.items()}, f, ensure_ascii=False, indent=2)
 
         with open(TRADES_FILE, 'w', encoding='utf-8') as f:
             json.dump(trades, f, ensure_ascii=False, indent=2)
@@ -988,6 +1073,11 @@ def save_data():
             with open(REFERRAL_CONTEST_FILE, 'w', encoding='utf-8') as f:
                 json.dump(current_referral_contest.to_dict(), f, ensure_ascii=False, indent=2)
 
+        # ── СОХРАНЕНИЕ РЫНКА ──────────────────────────────────────────────────────
+        with open(MARKET_FILE, 'w', encoding='utf-8') as f:
+            json.dump({lid: l.to_dict() for lid, l in market_listings.items()},
+                      f, ensure_ascii=False, indent=2)
+
         if promo_manager:
             promo_manager.save()
 
@@ -999,6 +1089,85 @@ def save_data():
 # ════════════════════════════════════════════════════════════════════════════════
 # Платёжные обработчики
 # ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+# Подтверждение / отклонение заказов (КРИТИЧЕСКИЙ БАГ: обработчики отсутствовали)
+# ════════════════════════════════════════════════════════════════════════════════
+@dp.callback_query(lambda c: c.data.startswith("confirm_order_"))
+async def admin_confirm_order(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+    oid = callback.data.replace("confirm_order_", "")
+    if oid not in orders:
+        await callback.answer("❌ Заказ не найден", show_alert=True)
+        return
+    if orders[oid].status != "pending":
+        await callback.answer(f"ℹ️ Уже обработан: {orders[oid].status}", show_alert=True)
+        return
+    o = orders[oid]
+    success = confirm_order(oid, callback.from_user.id)
+    if success:
+        card_name = cards.get(o.card_id, Card('', '?', 'basic')).name if o.card_id in cards else o.card_id
+        await send_order_notification(oid, o.user_id, card_name, o.price)
+        # Уведомляем получателя подарка отдельно
+        if getattr(o, 'gift_to_user_id', None) and o.gift_to_user_id != o.user_id:
+            recipient = users.get(o.gift_to_user_id)
+            payer = users.get(o.user_id)
+            try:
+                await bot.send_message(
+                    o.gift_to_user_id,
+                    f"🎁 <b>Вам подарили карточку!</b>\n\n"
+                    f"🎴 {card_name}\n"
+                    f"👤 От: @{payer.username if payer else '?'}\n\n"
+                    f"✅ Карточка добавлена в инвентарь!"
+                )
+            except Exception:
+                pass
+        try:
+            new_caption = (callback.message.caption or "") + "\n\n✅ ПОДТВЕРЖДЕНО"
+            await callback.message.edit_caption(new_caption, reply_markup=None)
+        except Exception:
+            pass
+        await callback.answer("✅ Заказ подтверждён!")
+    else:
+        await callback.answer("❌ Ошибка подтверждения", show_alert=True)
+
+
+@dp.callback_query(lambda c: c.data.startswith("reject_order_"))
+async def admin_reject_order(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+    oid = callback.data.replace("reject_order_", "")
+    if oid not in orders:
+        await callback.answer("❌ Заказ не найден", show_alert=True)
+        return
+    if orders[oid].status != "pending":
+        await callback.answer(f"ℹ️ Уже обработан: {orders[oid].status}", show_alert=True)
+        return
+    o = orders[oid]
+    success = reject_order(oid, callback.from_user.id)
+    if success:
+        try:
+            await bot.send_message(
+                o.user_id,
+                f"❌ <b>Заказ отклонён</b>\n\n"
+                f"🆔 {oid}\n"
+                f"💰 {o.price}₽\n\n"
+                f"Если это ошибка — свяжитесь с администратором."
+            )
+        except Exception:
+            pass
+        try:
+            new_caption = (callback.message.caption or "") + "\n\n❌ ОТКЛОНЕНО"
+            await callback.message.edit_caption(new_caption, reply_markup=None)
+        except Exception:
+            pass
+        await callback.answer("❌ Заказ отклонён")
+    else:
+        await callback.answer("❌ Ошибка отклонения", show_alert=True)
+
+
 @dp.pre_checkout_query()
 async def pre_checkout_handler(query: types.PreCheckoutQuery):
     await bot.answer_pre_checkout_query(query.id, ok=True)
@@ -1075,12 +1244,14 @@ async def cmd_start(message: types.Message):
                 rid = int(args[4:])
                 if rid != user_id and rid >= 1000: referrer_id = rid
             except: pass
+    # BUG FIX: is_new_user must be determined BEFORE get_or_create_user,
+    # because after that call user_id is always in users dict.
+    is_new_user = user_id not in users
     user = get_or_create_user(user_id, message.from_user.username or "",
                               message.from_user.first_name or "", referrer_id)
     if not await check_access_before_handle(message, user_id): return
     # Только для новых пользователей проверяем подписку
     # (check_subscription возвращает True при ошибке API — не блокируем)
-    is_new_user = user_id not in users or len(users.get(user_id, User(user_id)).cards) == 0
     if is_new_user and not await check_subscription(user_id):
         await message.answer(
             "👋 <b>Добро пожаловать в Funko Cards!</b>\n\n"
@@ -1100,14 +1271,20 @@ async def cmd_start(message: types.Message):
         "• Игры на карточки и токены 🎮\n"
         "• Колесо фортуны 🎡\n"
         "• ⚗️ Прокачка карточек (крафт)\n"
-        "• 🎉 Еженедельные ивенты и реферальный конкурс",
+        "• 🎉 Еженедельные ивенты и реферальный конкурс\n"
+        "• 🏪 Рынок — покупай и продавай карточки за токены\n"
+        "• 💝 Вишлист — получай уведомления о карточках",
         reply_markup=get_main_menu(user)
     )
 
 @dp.callback_query(lambda c: c.data == "check_subscription")
 async def process_check_subscription(callback: types.CallbackQuery):
-    # Подписка проверяется при /start
-    user = get_or_create_user(callback.from_user.id, callback.from_user.username or "")
+    # BUG FIX: Actually check subscription instead of blindly confirming
+    user_id = callback.from_user.id
+    if not await check_subscription(user_id):
+        await callback.answer("❌ Вы ещё не подписались! Подпишитесь и попробуйте снова.", show_alert=True)
+        return
+    user = get_or_create_user(user_id, callback.from_user.username or "")
     await callback.message.edit_text("✅ Подписка подтверждена!")
     await callback.message.answer("🎮 <b>Добро пожаловать!</b>", reply_markup=get_main_menu(user))
     await callback.answer()
@@ -1125,7 +1302,9 @@ async def help_command(message: types.Message):
         "🎡 <b>Колесо фортуны:</b> покупайте билеты за токены\n"
         "🎰 <b>Ежедневное колесо:</b> бесплатный спин раз в день\n"
         "🎉 <b>Ивенты:</b> каждую неделю новый челлендж\n"
-        "🏆 <b>Реферальный конкурс:</b> топ пригласивших в Топ игроков\n\n"
+        "🏆 <b>Реферальный конкурс:</b> топ пригласивших в Топ игроков\n"
+        "🏪 <b>Рынок:</b> продавай дубликаты и покупай нужные карточки\n"
+        "💝 <b>Вишлист:</b> отмечай желаемые карточки, бот уведомит о появлении\n\n"
         "Команды: /start /help /promo /invite /myorders /payment /refresh\n\n"
         f"Скидка за уровень {user.level}: {get_level_discount(user.level)}%"
     )
@@ -1291,7 +1470,7 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Открытие карточки в чате
+# Открытие карточки в чате (С НОВЫМИ ФИЧАМИ)
 # ════════════════════════════════════════════════════════════════════════════════
 @dp.message(F.text.lower().in_(["фанко","функо","fanco","funko","фанка","фанку"]))
 async def open_fanco(message: types.Message):
@@ -1319,13 +1498,33 @@ async def open_fanco(message: types.Message):
     icon = get_rarity_color(card.rarity)
     disc = get_level_discount(user.level)
     disc_text = f"\n🎁 Ваша скидка: {disc}%" if disc else ""
+    
+    # ── Ежедневный стрик ──────────────────────────────────────────────────────
+    streak_bonus = update_daily_streak(user)
+    streak_text = ""
+    if streak_bonus is not None:
+        streak_text = f"\n{streak_message(user.daily_streak, streak_bonus)}"
+    
+    # ── Карта дня: х2 токенов ────────────────────────────────────────────────
+    featured_bonus_text = ""
+    if is_featured_card(card_id, cards):
+        extra_tokens = (3 if user.is_premium else 1) * (FEATURED_TOKEN_MULTIPLIER - 1)
+        user.tokens += extra_tokens
+        featured_bonus_text = f"\n🃏 <b>Карта дня!</b> +{extra_tokens}🎫 бонус"
+        # Выдать достижение "везунчик"
+        if award_achievement_manual(user, "featured_card"):
+            save_data()
+    
+    # ── Сброс флага уведомления (кулдаун начался заново) ─────────────────────
+    user.cooldown_notified = False
+    
     text = (
         f"🎴 <b>{message.from_user.first_name}, вы получили карточку!</b>\n\n"
         f"{icon} <b>{card.name}</b>\n"
         f"📊 {get_rarity_name(card.rarity)}\n"
         f"📈 Карточек: {sum(user.cards.values())}\n"
         f"🎫 Токены: {user.tokens} (+{3 if user.is_premium else 1})\n"
-        f"🎮 Уровень: {user.level}{disc_text}\n\n"
+        f"🎮 Уровень: {user.level}{disc_text}{streak_text}{featured_bonus_text}\n\n"
         f"⏰ Следующая через {get_card_cooldown_hours(user)} ч"
     )
     fp = get_image_path(card)
@@ -1335,14 +1534,18 @@ async def open_fanco(message: types.Message):
                 await message.reply_video(FSInputFile(fp), caption=text)
             else:
                 await message.reply_photo(FSInputFile(fp), caption=text)
-            return
         except Exception as e:
             logger.error(f"Ошибка отправки медиа: {e}")
-    await message.reply(text)
+            await message.reply(text)
+    else:
+        await message.reply(text)
+    
+    # Проверяем достижения (асинхронно, не блокируем ответ)
+    asyncio.create_task(check_and_award_achievements(user, bot, cards, save_data))
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Инвентарь
+# Инвентарь (С НОВОЙ КНОПКОЙ ДЛЯ ВИШЛИСТА)
 # ════════════════════════════════════════════════════════════════════════════════
 @dp.message(F.text == "🎴 Инвентарь")
 async def inventory_menu(message: types.Message):
@@ -1375,6 +1578,8 @@ async def show_inventory_page(user_id: int, chat_id: int):
     if page > 0: nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"inventory_page_{page-1}"))
     if page < total_pages - 1: nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"inventory_page_{page+1}"))
     if nav: kb.row(*nav)
+    # ── КНОПКА ПРОДАЖИ ДУБЛИКАТОВ ─────────────────────────────────────────────
+    kb.row(InlineKeyboardButton(text="♻️ Продать дубликаты", callback_data="sell_duplicates_menu"))
     kb.row(InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_menu"))
     await bot.send_message(chat_id,
         f"🎴 <b>Инвентарь</b>\n\nСтраница {page+1}/{total_pages}\n"
@@ -1401,15 +1606,42 @@ async def view_card_handler(callback: types.CallbackQuery):
     qty = user.cards.get(cid, 0)
     text = (f"{get_rarity_color(card.rarity)} <b>{card.name}</b>\n\n"
             f"📊 {get_rarity_name(card.rarity)}\n📈 {qty} шт.\n🆔 {cid}")
+    
+    # Клавиатура с кнопкой вишлиста
+    wishlist_kb = build_card_view_keyboard(cid, user)
+    
     fp = get_image_path(card)
     if fp and os.path.exists(fp):
         try:
-            if is_video_card(card): await callback.message.answer_video(FSInputFile(fp), caption=text)
-            else: await callback.message.answer_photo(FSInputFile(fp), caption=text)
-        except: await callback.message.answer(text)
+            if is_video_card(card):
+                await callback.message.answer_video(FSInputFile(fp), caption=text, reply_markup=wishlist_kb)
+            else:
+                await callback.message.answer_photo(FSInputFile(fp), caption=text, reply_markup=wishlist_kb)
+        except:
+            await callback.message.answer(text, reply_markup=wishlist_kb)
     else:
-        await callback.message.answer(text)
+        await callback.message.answer(text, reply_markup=wishlist_kb)
     await callback.answer()
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Обработчик вишлиста
+# ════════════════════════════════════════════════════════════════════════════════
+@dp.message(F.text == "💝 Вишлист")
+async def wishlist_menu_handler(message: types.Message):
+    if not await check_access_before_handle(message, message.from_user.id): return
+    user = get_or_create_user(message.from_user.id)
+    wishlist = getattr(user, 'wishlist', [])
+    if not wishlist:
+        await message.answer(
+            "💭 <b>Вишлист пуст</b>\n\n"
+            "Открывайте карточки в инвентаре и нажимайте 💝 В вишлист — "
+            "бот уведомит, когда карточка появится в магазине!"
+        )
+        return
+    kb = InlineKeyboardBuilder()
+    kb.add(InlineKeyboardButton(text="💝 Мой вишлист", callback_data="my_wishlist"))
+    await message.answer("💝 <b>Вишлист</b>", reply_markup=kb.as_markup())
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1839,6 +2071,12 @@ async def periodic_tasks():
                         await _ev_mod.check_and_rotate_referral_contest()
                         # Синхронизируем обновлённый конкурс обратно в main.py
                         current_referral_contest = _ev_mod.current_referral_contest
+            # Каждые 15 минут — умные напоминания о кулдауне (с передачей функции get_card_cooldown_hours)
+            if tick % 15 == 0:
+                await notify_cooldown_ready(users, bot, save_data, get_card_cooldown_hours)
+            # Каждый час — очистка истёкших лотов рынка
+            if tick % 60 == 0:
+                clean_expired_market()
             if tick % 5 == 0:  # Сохраняем каждые 5 минут
                 save_data()
         except Exception as e:
@@ -1872,12 +2110,18 @@ async def main():
     events_module.current_weekly_event = current_weekly_event
     events_module.current_referral_contest = current_referral_contest
 
+    # Подключаем новые роутеры
+    from market_handlers import market_router, setup_market_handlers
+    from inventory_addons import inventory_router, setup_inventory_addons
+
     dp.include_router(game_router)
     dp.include_router(craft_router)
     dp.include_router(profile_router)
     dp.include_router(shop_router)
     dp.include_router(trade_router)
     dp.include_router(admin_router)
+    dp.include_router(market_router)
+    dp.include_router(inventory_router)
 
     setup_game_handlers(
         bot, users, cards, active_game_challenges, save_data,
@@ -1920,12 +2164,23 @@ async def main():
         ban_user, confirm_order, reject_order, send_order_notification, get_top_spenders,
         DATA_DIR, IMAGES_DIR, VIDEOS_DIR, USERS_FILE, Card
     )
+    setup_market_handlers(
+        bot, users, cards, market_listings, save_data,
+        get_or_create_user, get_rarity_color, get_rarity_name,
+        check_access_before_handle, check_and_award_achievements
+    )
+    setup_inventory_addons(
+        bot, users, cards, save_data,
+        get_or_create_user, get_rarity_color, get_rarity_name,
+        check_access_before_handle, check_and_award_achievements  # ← ДОБАВЛЕНО
+    )
 
     logger.info("=" * 50)
     logger.info(f"🚀 Бот запускается...")
     logger.info(f"👥 Пользователей: {len(users)}")
     logger.info(f"🎴 Карточек: {len(cards)}")
     logger.info(f"📦 Заказов: {len(orders)}")
+    logger.info(f"🏪 Лотов на рынке: {len(market_listings)}")
     logger.info("=" * 50)
 
     asyncio.create_task(periodic_tasks())

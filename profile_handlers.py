@@ -152,6 +152,10 @@ async def profile_menu(message: types.Message):
         text="🔔 Настройки уведомлений",
         callback_data="notification_settings"
     ))
+    keyboard.add(InlineKeyboardButton(
+        text="🏅 Достижения",
+        callback_data="show_achievements"
+    ))
     await message.answer(response, reply_markup=keyboard.as_markup())
 
 @router.callback_query(lambda c: c.data == "notification_settings")
@@ -239,6 +243,14 @@ async def toggle_notif_system(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data == "back_to_profile")
 async def back_to_profile_handler(callback: types.CallbackQuery):
     await profile_menu(callback.message)
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == "show_achievements")
+async def show_achievements_handler(callback: types.CallbackQuery):
+    from features import format_achievements_page
+    user = get_or_create_user(callback.from_user.id)
+    text = format_achievements_page(user)
+    await callback.message.answer(text)
     await callback.answer()
 
 @router.message(F.text == "💝 Поддержать проект")
@@ -658,4 +670,3 @@ async def back_to_menu_handler(callback: types.CallbackQuery):
         "🏠 <b>Главное меню</b>",
         reply_markup=get_main_menu(user)
     )
-

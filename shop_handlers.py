@@ -7,8 +7,8 @@ from aiogram import Router, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
+from aiogram.filters import StateFilter  # ← ДОБАВЛЕНО
 
-from aiogram.filters import StateFilter
 from config import *
 from models import Order
 from states import ShopStates
@@ -119,10 +119,23 @@ async def shop_menu_handler(message: types.Message):
     if hasattr(user, 'secret_shop_expires') and user.secret_shop_expires:
         if datetime.fromisoformat(user.secret_shop_expires) > datetime.now():
             secret_btn_text = "\n🤫 <b>У вас есть доступ в Секретный магазин!</b>"
+    
+    # ── Карта дня в магазине ──────────────────────────────────────────────────
+    from features import featured_card_info, get_featured_card, featured_shop_price
+    featured_cid = get_featured_card(cards)
+    featured_text = featured_card_info(cards, get_rarity_color, get_rarity_name)
+    
+    # Если карта дня есть в магазине — снизить цену
+    if featured_cid and featured_cid in shop_items:
+        item = shop_items[featured_cid]
+        if not getattr(item, '_featured_discounted', False):
+            item.price = featured_shop_price(item.original_price)
+            item._featured_discounted = True
+            save_data()
 
     await message.answer(
         f"🛒 <b>Магазин карточек</b>\n\n"
-        f"💰 Токенов: {user.tokens}🎫{disc_text}{secret_btn_text}\n\n"
+        f"💰 Токенов: {user.tokens}🎫{disc_text}{secret_btn_text}{featured_text}\n\n"
         f"<b>Карточки (₽ / 🎫):</b>",
         reply_markup=_build_shop_keyboard(user)
     )
@@ -138,9 +151,22 @@ async def shop_refresh_handler(callback: types.CallbackQuery):
     user = get_or_create_user(callback.from_user.id)
     discount = get_level_discount(user.level)
     disc_text = f"\n🎁 Скидка {discount}%" if discount else ""
+    
+    # ── Карта дня в магазине (для обновления) ─────────────────────────────────
+    from features import featured_card_info, get_featured_card, featured_shop_price
+    featured_cid = get_featured_card(cards)
+    featured_text = featured_card_info(cards, get_rarity_color, get_rarity_name)
+    
+    if featured_cid and featured_cid in shop_items:
+        item = shop_items[featured_cid]
+        if not getattr(item, '_featured_discounted', False):
+            item.price = featured_shop_price(item.original_price)
+            item._featured_discounted = True
+            save_data()
+    
     try:
         await callback.message.edit_text(
-            f"🛒 <b>Магазин (обновлено)</b>\n\n💰 Токенов: {user.tokens}🎫{disc_text}",
+            f"🛒 <b>Магазин (обновлено)</b>\n\n💰 Токенов: {user.tokens}🎫{disc_text}{featured_text}",
             reply_markup=_build_shop_keyboard(user)
         )
     except Exception:
