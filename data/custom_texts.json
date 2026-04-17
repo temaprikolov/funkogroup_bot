@@ -1,5 +1,0 @@
-{
-  "welcome": "🏪 Рынок",
-  "drop_cooldown": "⏳ Кулдаун! Жди ещё {time}",
-  "drop_success": "🎴 Вы получили: {card_name} ({rarity})!"
-}
